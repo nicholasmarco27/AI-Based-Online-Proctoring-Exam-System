@@ -1,0 +1,11 @@
+Flask
+Flask-SQLAlchemy
+Flask-Cors
+PyJWT
+python-dotenv
+opencv-python-headless
+numpy
+Pillow
+Flask-SocketIO
+eventlet # Or gevent
+mediapipe==0.10.14 # Add MediaPipe

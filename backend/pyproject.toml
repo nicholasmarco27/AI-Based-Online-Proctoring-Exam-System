@@ -1,0 +1,20 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "Flask",
+    "Flask-SQLAlchemy",
+    "Flask-Cors",
+    "PyJWT",
+    "python-dotenv",
+    "opencv-python-headless",
+    "numpy",
+    "Pillow",
+    "Flask-SocketIO",
+    "eventlet",
+    "mediapipe==0.10.14",
+    "Werkzeug"
+]

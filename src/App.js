@@ -14,7 +14,8 @@ import AdminExamList from './pages/admin/AdminExamList';
 import ExamForm from './pages/admin/ExamForm'; // <-- Import ExamForm for Create/Edit
 import StudentDashboard from './pages/student/StudentDashboard';
 import StudentAvailableExams from './pages/student/StudentAvailableExams';
-import ExamTakingInterface from './pages/student/ExamTakingInterface'; // <-- Import
+import ExamTakingInterface from './pages/student/ExamTakingInterface';
+import ExamSubmittedPage from './pages/student/ExamSubmittedPage';
 // Optional: Placeholder for a generic loading component
 // import LoadingSpinner from './components/LoadingSpinner';
 // Optional: Placeholder for a 404 component
@@ -185,6 +186,7 @@ function App() {
               <Route index element={<StudentDashboard />} /> {/* Default page for /student */}
               <Route path="exams" element={<StudentAvailableExams />} /> {/* List available exams */}
               <Route path="take-exam/:examId" element={<ExamTakingInterface />} />
+              <Route path="exam/:examId/submitted" element={<ExamSubmittedPage />} />
               {/* Add other student-specific routes here (e.g., results, profile, taking an exam) */}
               {/* <Route path="results" element={<StudentResults />} /> */}
               {/* <Route path="profile" element={<StudentProfile />} /> */}

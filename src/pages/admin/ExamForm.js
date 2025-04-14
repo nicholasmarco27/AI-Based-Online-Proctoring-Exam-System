@@ -286,8 +286,22 @@ function ExamForm() {
                 {/* Questions Section */}
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
                      <Typography variant="h6">Questions</Typography>
-                     <Button variant="outlined" startIcon={<AddCircleOutlineIcon />} onClick={handleAddQuestion} disabled={isSaving} >Add Question</Button>
-                </Box>
+                     <Box>
+                        <Typography variant="body2" color="text.secondary" sx={{ mr: 2, display: 'inline' }}>
+                            {questions.length > 0 ? 
+                                `${questions.length} questions (${(100 / questions.length).toFixed(2)} points each)` : 
+                                'No questions yet'}
+                        </Typography>
+                        <Button 
+                                variant="outlined" 
+                                startIcon={<AddCircleOutlineIcon />} 
+                                onClick={handleAddQuestion} 
+                                disabled={isSaving}
+                            >
+                                Add Question
+                            </Button>
+                        </Box>
+                    </Box>
                 {questions.length === 0 && <Typography color="text.secondary" sx={{ mb: 2, fontStyle: 'italic' }}>No questions added yet. Click 'Add Question' to begin.</Typography>}
                 <List sx={{mb: 2}}> {/* Add margin bottom to list */}
                     {questions.map((q, qIndex) => (
@@ -329,6 +343,7 @@ function ExamForm() {
                     ))}
                 </List>
 
+                
 
                 {/* Submission Area */}
                 {error && <Alert severity="error" sx={{ mt: 3, mb: 2 }}>{error}</Alert>}

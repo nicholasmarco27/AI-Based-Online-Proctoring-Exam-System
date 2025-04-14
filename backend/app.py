@@ -275,18 +275,50 @@ def create_app(config_class=Config):
     @app.route('/api/student/exams/<int:exam_id>/submit', methods=['POST'])
     @student_required
     def submit_exam_answers(exam_id):
-         data = request.get_json()
-         if not data or 'answers' not in data: return jsonify({"message": "Missing 'answers' data."}), 400
-         student_answers = data['answers']; user_id = g.current_user.id
-         print(f"--- Received answers for Exam {exam_id} from User {user_id}: {student_answers} ---") # DEBUG
-         # --- TODO: Process Answers (score, store submission) ---
+        data = request.get_json()
+        if not data or 'answers' not in data:
+            return jsonify({"message": "Missing 'answers' data."}), 400
 
-         # --- Clean up proctoring state ---
-         with proctoring_lock:
-            if user_id in proctoring_violations:
-                del proctoring_violations[user_id]
-                print(f"--- Cleared proctoring state for user {user_id} after submission ---")
-         return jsonify({"message": "Exam submitted successfully. Results will be available later."}), 200
+        student_answers = data['answers']
+        user_id = g.current_user.id
+        print(f"--- Received answers for Exam {exam_id} from User {user_id}: {student_answers} ---")  # DEBUG
+
+        try:
+            # Ambil soal ujian dari database
+            exam = Exam.query.get_or_404(exam_id)
+            questions = exam.questions
+
+            # Buat dictionary id → correct_answer
+            question_map = {str(q.id): q.correct_answer for q in questions}
+
+            # Hitung jumlah soal dan jawaban benar
+            total_questions = len(question_map)
+            correct_answers = 0
+
+            for qid, selected_answer in student_answers.items():
+                correct = question_map.get(str(qid))
+                if selected_answer == correct:
+                    correct_answers += 1
+
+            print(f"User {user_id} got {correct_answers} out of {total_questions} correct")
+
+            # --- Clean up proctoring state ---
+            with proctoring_lock:
+                if user_id in proctoring_violations:
+                    del proctoring_violations[user_id]
+                    print(f"--- Cleared proctoring state for user {user_id} after submission ---")
+
+            # Kirim hasil ke frontend
+            return jsonify({
+                "message": "Exam submitted successfully.",
+                "correctAnswers": correct_answers,
+                "totalQuestions": total_questions
+            }), 200
+
+        except Exception as e:
+            print(f"Error during answer processing: {e}")
+            return jsonify({"message": "An error occurred during exam submission."}), 500
+
 
     @app.route('/api/student/dashboard', methods=['GET'])
     @student_required

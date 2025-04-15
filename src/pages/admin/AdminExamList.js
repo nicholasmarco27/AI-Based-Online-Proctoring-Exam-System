@@ -108,7 +108,10 @@ function AdminExamList() {
              setDeleteError(err.response?.data?.message || err.message || "Failed to delete exam.");
          }
      };
-    const handleViewResults = (id) => { console.log("View results (NI):", id); };
+     const handleViewResults = (examId) => {
+        // Arahkan ke halaman hasil ujian spesifik, lewatkan examId di URL
+        navigate(`/admin/exams/${examId}/results`);
+     };
 
     // --- Render ---
     return (
@@ -162,9 +165,21 @@ function AdminExamList() {
                                     {/* --- Display New Data --- */}
                                     <TableCell align="right">{exam.allowed_attempts}</TableCell>
                                     <TableCell align="center">
-                                        <Tooltip title="Edit Exam"><IconButton size="small" onClick={() => handleEdit(exam.id)} aria-label="edit" color="primary"><EditIcon fontSize="small" /></IconButton></Tooltip>
-                                        <Tooltip title="View Results (NI)"><IconButton size="small" onClick={() => handleViewResults(exam.id)} aria-label="view results" color="info" sx={{ ml: 0.5 }}><VisibilityIcon fontSize="small" /></IconButton></Tooltip>
-                                        <Tooltip title="Delete Exam"><IconButton size="small" color="error" onClick={() => handleDeleteClick(exam)} aria-label="delete" sx={{ ml: 0.5 }}><DeleteIcon fontSize="small" /></IconButton></Tooltip>
+                                        <Tooltip title="Edit Exam">
+                                            <IconButton size="small" onClick={() => handleEdit(exam.id)} aria-label="edit" color="primary">
+                                                <EditIcon fontSize="small" />
+                                            </IconButton>
+                                        </Tooltip>
+                                        <Tooltip title="View Results">
+                                            <IconButton size="small" onClick={() => handleViewResults(exam.id)} aria-label="view results" color="info" sx={{ ml: 0.5 }}>
+                                                <VisibilityIcon fontSize="small" />
+                                            </IconButton>
+                                        </Tooltip>
+                                        <Tooltip title="Delete Exam">
+                                            <IconButton size="small" color="error" onClick={() => handleDeleteClick(exam)} aria-label="delete" sx={{ ml: 0.5 }}>
+                                                <DeleteIcon fontSize="small" />
+                                            </IconButton>
+                                        </Tooltip>
                                     </TableCell>
                                 </TableRow>
                             )) : (

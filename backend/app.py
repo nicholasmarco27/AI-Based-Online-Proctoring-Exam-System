@@ -14,9 +14,12 @@ import threading
 import math # For atan2 in angle calculation
 
 # Import models and config
-from models import db, User, Exam, Question, RoleEnum, ExamStatusEnum
+from models import db, User, Exam, Question, RoleEnum, ExamStatusEnum, ExamSubmission
 from config import Config
 from dotenv import load_dotenv
+
+from sqlalchemy.orm import joinedload
+
 
 load_dotenv()
 
@@ -212,7 +215,7 @@ def create_app(config_class=Config):
     @app.route('/api/admin/exams/<int:exam_id>', methods=['GET'])
     @admin_required
     def get_exam(exam_id):
-        exam = Exam.query.get_or_404(exam_id)
+        exam = Exam.query.options(db.joinedload(Exam.questions)).get_or_404(exam_id)
         return jsonify(exam.to_dict(include_questions=True))
 
     @app.route('/api/admin/exams/<int:exam_id>', methods=['PUT'])
@@ -245,6 +248,35 @@ def create_app(config_class=Config):
         try: db.session.delete(exam); db.session.commit(); return jsonify({"message": f"Exam '{exam.name}' deleted"}), 200
         except Exception as e: db.session.rollback(); print(f"Err: {e}"); return jsonify({"message":"Internal error"}), 500
 
+    @app.route('/api/admin/exams/<int:exam_id>/results', methods=['GET'])
+    @admin_required
+    def get_exam_results(exam_id):
+        """Fetches all submissions for a specific exam."""
+        try:
+            # Verify exam exists (optional but good practice)
+            exam = Exam.query.get(exam_id)
+            if not exam:
+                return jsonify({"message": "Exam not found"}), 404
+
+            # Query submissions, eager load student data for efficiency
+            submissions = ExamSubmission.query.filter_by(exam_id=exam_id)\
+                                               .options(db.joinedload(ExamSubmission.student)) \
+                                               .order_by(ExamSubmission.submitted_at.desc())\
+                                               .all()
+
+            # Serialize results using the model's to_dict method
+            results = [sub.to_dict() for sub in submissions]
+
+            return jsonify(results), 200
+
+        except Exception as e:
+            print(f"Error fetching results for exam {exam_id}: {e}")
+            # Log the full error traceback for debugging if needed
+            # import traceback
+            # traceback.print_exc()
+            return jsonify({"message": "An internal server error occurred while fetching results."}), 500
+
+
     # --- Student Routes ---
     @app.route('/api/student/exams/available', methods=['GET'])
     @student_required
@@ -276,49 +308,100 @@ def create_app(config_class=Config):
     @student_required
     def submit_exam_answers(exam_id):
         data = request.get_json()
-        if not data or 'answers' not in data:
-            return jsonify({"message": "Missing 'answers' data."}), 400
+        # --- Validasi Input Awal ---
+        if not data or 'answers' not in data or not isinstance(data['answers'], dict):
+            print(f"[Submit Error] Invalid or missing 'answers' payload for exam {exam_id}")
+            return jsonify({"message": "Missing or invalid 'answers' data (must be a dictionary)."}), 400
 
-        student_answers = data['answers']
+        student_answers = data['answers'] # Format: {"question_id": "selected_option", ...}
         user_id = g.current_user.id
-        print(f"--- Received answers for Exam {exam_id} from User {user_id}: {student_answers} ---")  # DEBUG
+        print(f"--- Received submission request for Exam ID: {exam_id} from User ID: {user_id} ---")
+        # print(f"--- Raw Answers Received: {student_answers} ---") # Optional: Log raw answers
 
         try:
-            # Ambil soal ujian dari database
-            exam = Exam.query.get_or_404(exam_id)
+            # --- Ambil Data Ujian & Pertanyaan ---
+            # Eager load questions for efficiency
+            exam = Exam.query.options(joinedload(Exam.questions)).get(exam_id)
+            if not exam:
+                print(f"[Submit Error] Exam with ID {exam_id} not found.")
+                return jsonify({"message": "Exam not found."}), 404
+            # Pastikan ujian bisa disubmit (misal: status PUBLISHED)
+            if exam.status != ExamStatusEnum.PUBLISHED:
+                print(f"[Submit Error] Exam {exam_id} is not PUBLISHED (Status: {exam.status.value}).")
+                return jsonify({"message": "This exam is not currently available for submission."}), 403
+
+            # --- Cek Jumlah Percobaan (Attempts) ---
+            # (Penting untuk mencegah submit berlebih)
+            attempts_taken = ExamSubmission.query.filter_by(user_id=user_id, exam_id=exam_id).count()
+            if attempts_taken >= exam.allowed_attempts:
+                print(f"[Submit Error] User {user_id} exceeded allowed attempts ({attempts_taken}/{exam.allowed_attempts}) for Exam {exam_id}.")
+                return jsonify({"message": f"Submission failed: Maximum attempts ({exam.allowed_attempts}) reached."}), 403
+            print(f"--- User {user_id} attempt {attempts_taken + 1}/{exam.allowed_attempts} for Exam {exam_id} ---")
+
             questions = exam.questions
+            if not questions:
+                # Kasus jika ujian tidak punya soal (seharusnya tidak terjadi)
+                total_questions = 0
+                correct_answers = 0
+                calculated_score = 0.0
+                print(f"[Submit Warning] Exam {exam_id} has no questions.")
+            else:
+                # --- Hitung Skor di SERVER ---
+                question_map = {str(q.id): q.correct_answer for q in questions}
+                total_questions = len(question_map)
+                correct_answers = 0
 
-            # Buat dictionary id → correct_answer
-            question_map = {str(q.id): q.correct_answer for q in questions}
+                for q_id_str, correct_ans in question_map.items():
+                    student_ans = student_answers.get(q_id_str) # Ambil jawaban siswa untuk soal ini
+                    # Lakukan perbandingan case-sensitive atau insensitive sesuai kebutuhan
+                    # Contoh: if student_ans is not None and student_ans.strip() == correct_ans:
+                    if student_ans == correct_ans:
+                        correct_answers += 1
 
-            # Hitung jumlah soal dan jawaban benar
-            total_questions = len(question_map)
-            correct_answers = 0
+                calculated_score = (correct_answers / total_questions) * 100.0 if total_questions > 0 else 0.0
+                print(f"--- Score calculated for User {user_id}, Exam {exam_id}: {correct_answers}/{total_questions} ({calculated_score:.2f}%) ---")
 
-            for qid, selected_answer in student_answers.items():
-                correct = question_map.get(str(qid))
-                if selected_answer == correct:
-                    correct_answers += 1
+            # --- >>> BAGIAN YANG HILANG DI KODE ANDA: SIMPAN HASIL KE DATABASE <<< ---
+            new_submission = ExamSubmission(
+                user_id=user_id,
+                exam_id=exam_id, # Gunakan exam_id dari parameter route
+                submitted_at=datetime.utcnow(), # Waktu UTC saat submit
+                score=calculated_score,
+                correct_answers_count=correct_answers,
+                total_questions_count=total_questions,
+                answers=student_answers # Property setter model akan handle JSON dump
+            )
+            print(f"--- Preparing to add submission to DB: User {user_id}, Exam {exam_id}, Score {calculated_score} ---")
+            db.session.add(new_submission)
+            print("--- Submission object added to session ---")
+            db.session.commit() # Simpan perubahan ke database
+            print(f"--- !!! SUCCESSFULLY SAVED submission ID: {new_submission.id} for User {user_id}, Exam {exam_id} !!! ---")
+            # --- >>> AKHIR BAGIAN YANG HILANG <<< ---
 
-            print(f"User {user_id} got {correct_answers} out of {total_questions} correct")
 
-            # --- Clean up proctoring state ---
+            # --- Bersihkan State Proctoring (setelah commit berhasil) ---
             with proctoring_lock:
                 if user_id in proctoring_violations:
                     del proctoring_violations[user_id]
-                    print(f"--- Cleared proctoring state for user {user_id} after submission ---")
+                    print(f"--- Cleared proctoring state for user {user_id} after successful submission ---")
 
-            # Kirim hasil ke frontend
+            # --- Kembalikan Hasil ke Frontend Mahasiswa ---
             return jsonify({
                 "message": "Exam submitted successfully.",
+                "submissionId": new_submission.id, # Kirim ID submission yang baru dibuat
                 "correctAnswers": correct_answers,
-                "totalQuestions": total_questions
-            }), 200
+                "totalQuestions": total_questions,
+                "score": calculated_score
+                # "reviewUrl": None # Tambahkan jika ada fitur review
+            }), 200 # Gunakan 200 OK
 
         except Exception as e:
-            print(f"Error during answer processing: {e}")
-            return jsonify({"message": "An error occurred during exam submission."}), 500
-
+            # Tangani error jika terjadi sebelum commit
+            db.session.rollback() # BATALKAN semua perubahan sesi jika ada error
+            print(f"!!! CRITICAL ERROR during submission processing for User {user_id}, Exam {exam_id}: {type(e).__name__} - {e} !!!")
+            import traceback
+            traceback.print_exc() # Cetak traceback lengkap untuk debugging
+            return jsonify({"message": "An internal server error occurred during exam submission. Please try again or contact support."}), 500
 
     @app.route('/api/student/dashboard', methods=['GET'])
     @student_required

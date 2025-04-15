@@ -16,6 +16,7 @@ import StudentDashboard from './pages/student/StudentDashboard';
 import StudentAvailableExams from './pages/student/StudentAvailableExams';
 import ExamTakingInterface from './pages/student/ExamTakingInterface';
 import ExamSubmittedPage from './pages/student/ExamSubmittedPage';
+import ExamResultAdm from './pages/admin/ExamResultAdm';
 // Optional: Placeholder for a generic loading component
 // import LoadingSpinner from './components/LoadingSpinner';
 // Optional: Placeholder for a 404 component
@@ -172,6 +173,8 @@ function App() {
               <Route path="exams" element={<AdminExamList />} /> {/* Exam list page */}
               <Route path="exams/new" element={<ExamForm />} /> {/* Create new exam */}
               <Route path="exams/:examId/edit" element={<ExamForm />} /> {/* Edit existing exam */}
+              <Route path="exams/:examId/results" element={<ExamResultAdm />} /> {/* View results for a specific exam */}
+              <Route path="exams/:examId/results/:submissionId" element={<ExamResultAdm />} /> {/* View results for a specific submission */}       
               {/* Add other admin-specific routes here (e.g., users, results) */}
               {/* <Route path="users" element={<AdminUserManagement />} /> */}
               {/* Catch-all for any undefined paths under /admin */}

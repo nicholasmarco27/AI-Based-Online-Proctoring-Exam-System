@@ -3,6 +3,7 @@ from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 import enum
 import json # To handle options storage
+from datetime import datetime
 
 db = SQLAlchemy()
 
@@ -17,6 +18,7 @@ class User(db.Model):
     username = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.String(256), nullable=False) # Increased length for hash
     role = db.Column(db.Enum(RoleEnum), nullable=False, default=RoleEnum.STUDENT)
+    submissions = db.relationship('ExamSubmission', back_populates='student', lazy=True)
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -93,6 +95,7 @@ class Exam(db.Model):
     # --- Add relationship to Question ---
     # cascade="all, delete-orphan": delete questions when exam is deleted
     questions = db.relationship('Question', back_populates='exam', lazy=True, cascade="all, delete-orphan")
+    submissions = db.relationship('ExamSubmission', back_populates='exam', lazy=True)
     
     def __repr__(self):
         return f'<Exam {self.name}>'
@@ -121,3 +124,62 @@ class Exam(db.Model):
              # Serialize related questions if requested
              data['questions'] = [q.to_dict() for q in self.questions]
         return data
+    
+    # Example methods (implement logic based on submissions)
+    def get_student_count(self):
+        # Query distinct users from submissions for this exam
+        # return ExamSubmission.query.filter_by(exam_id=self.id).distinct(ExamSubmission.user_id).count() # Adjust based on DB dialect
+        return len({sub.user_id for sub in self.submissions}) # Simpler alternative
+
+    def get_total_attempts_count(self):
+        # Query total submissions for this exam
+        return len(self.submissions)
+
+class ExamSubmission(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    exam_id = db.Column(db.Integer, db.ForeignKey('exam.id'), nullable=False)
+    submitted_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    score = db.Column(db.Float, nullable=False) # Or db.Integer depending on how you score
+    correct_answers_count = db.Column(db.Integer, nullable=False)
+    total_questions_count = db.Column(db.Integer, nullable=False) # Store total at time of submission
+
+    # Store the actual answers given by the student (e.g., as JSON)
+    # Key: question_id, Value: selected_option
+    answers_json = db.Column(db.Text, nullable=True) # Store as JSON string
+
+    # Relationships
+    student = db.relationship('User', back_populates='submissions')
+    exam = db.relationship('Exam', back_populates='submissions')
+
+    @property
+    def answers(self):
+        """Get answers as a Python dict."""
+        if self.answers_json:
+            return json.loads(self.answers_json)
+        return {}
+
+    @answers.setter
+    def answers(self, value):
+        """Set answers from a Python dict."""
+        if not isinstance(value, dict):
+            raise ValueError("Answers must be a dictionary")
+        self.answers_json = json.dumps(value)
+
+    def __repr__(self):
+        return f'<ExamSubmission User {self.user_id} for Exam {self.exam_id} at {self.submitted_at}>'
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'exam_id': self.exam_id,
+            'submitted_at': self.submitted_at.isoformat() + 'Z', # ISO 8601 format, Z for UTC
+            'score': self.score,
+            'correct_answers_count': self.correct_answers_count,
+            'total_questions_count': self.total_questions_count,
+            'answers': self.answers, # Include the parsed answers
+            # Optionally include related data if needed often
+            'student_username': self.student.username if self.student else None,
+            'exam_name': self.exam.name if self.exam else None,
+        }

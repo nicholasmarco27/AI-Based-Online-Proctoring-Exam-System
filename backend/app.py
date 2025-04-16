@@ -553,11 +553,124 @@ def create_app(config_class=Config):
     @app.route('/api/student/dashboard', methods=['GET'])
     @student_required
     def get_student_dashboard_data():
-          upcoming = Exam.query.filter(Exam.status == ExamStatusEnum.PUBLISHED).limit(3).all()
-          recent_q = Exam.query.filter_by(status=ExamStatusEnum.ARCHIVED).limit(2).all() # Placeholder
-          up_data = [{'id':e.id,'name':e.name,'subject':e.subject,'date':'N/A','time':'N/A','duration':e.duration} for e in upcoming]
-          rec_data = [{'id':e.id,'name':e.name,'subject':e.subject,'dateTaken':'N/A','score':'N/A','grade':'N/A'} for e in recent_q]
-          return jsonify({'upcomingExams': up_data, 'recentResults': rec_data})
+        # ... (existing dashboard logic) ...
+        # Example: Fetch some basic data
+        upcoming = Exam.query.filter(Exam.status == ExamStatusEnum.PUBLISHED)\
+                             .order_by(Exam.id.desc())\
+                             .limit(3).all()
+        # Fetch recent submissions for this specific student
+        recent_submissions = ExamSubmission.query.filter_by(user_id=g.current_user.id)\
+                                                 .order_by(ExamSubmission.submitted_at.desc())\
+                                                 .limit(2).all()
+
+        up_data = [{'id':e.id, 'name':e.name, 'subject':e.subject, 'duration':e.duration} for e in upcoming]
+        # Fetch related exam details for recent submissions
+        rec_data = []
+        for sub in recent_submissions:
+            exam = Exam.query.get(sub.exam_id) # Fetch the exam details
+            rec_data.append({
+                'submissionId': sub.id,
+                'examName': exam.name if exam else 'Exam Not Found', # Handle if exam was deleted
+                'subject': exam.subject if exam else 'N/A',
+                'dateTaken': sub.submitted_at.strftime('%Y-%m-%d %H:%M:%S') if sub.submitted_at else 'N/A', # Format date
+                'score': f"{sub.score:.2f}%" if sub.score is not None else 'N/A' , # Format score
+                # Add grade calculation if needed based on score
+            })
+
+        return jsonify({'upcomingExams': up_data, 'recentResults': rec_data})
+
+    @app.route('/api/student/profile', methods=['GET'])
+    @student_required
+    def get_student_profile():
+        """Fetches basic profile information for the currently logged-in student."""
+        student = g.current_user # Get the user object attached by @token_required
+        try:
+            profile_data = {
+                "id": student.id,
+                "username": student.username,
+                "role": student.role.value,
+                # Add other non-sensitive fields if needed (e.g., email if you add it to the model)
+                # "email": student.email
+            }
+            return jsonify(profile_data), 200
+        except Exception as e:
+            print(f"Error fetching profile for user {student.id}: {e}")
+            return jsonify({"message": "Error retrieving profile information."}), 500
+    
+    @app.route('/api/student/profile/edit', methods=['POST'])
+    @student_required
+    def edit_student_profile():
+        """Allows the currently logged-in student to update their username and/or password."""
+        student = g.current_user  # Get the user object attached by @token_required
+        data = request.get_json()
+
+        if not data:
+            return jsonify({"message": "No update data provided."}), 400
+
+        updated_fields = [] # Keep track of what was changed for the response message
+        errors = {} # Collect potential validation errors
+
+        # --- Username Update Logic ---
+        new_username = data.get('username')
+        if new_username is not None: # Check if username was provided in the request
+            new_username = new_username.strip()
+            if not new_username:
+                errors['username'] = "Username cannot be empty."
+            elif len(new_username) < 3:
+                errors['username'] = "Username must be at least 3 characters long."
+            elif new_username != student.username:
+                # Check if the new username is already taken by ANOTHER user
+                existing_user = User.query.filter(User.username == new_username, User.id != student.id).first()
+                if existing_user:
+                    errors['username'] = "This username is already taken. Please choose another."
+                else:
+                    student.username = new_username
+                    updated_fields.append("username")
+            # If new_username is the same as the current one, do nothing for username
+
+        # --- Password Update Logic ---
+        new_password = data.get('password')
+        if new_password: # Check if a new password string was provided (and is not empty)
+            if len(new_password) < 6:
+                errors['password'] = "Password must be at least 6 characters long."
+            else:
+                # Hash the new password using the model's method
+                student.set_password(new_password)
+                updated_fields.append("password")
+        # If password field is missing or empty, the password remains unchanged.
+
+        # --- Final Validation and Commit ---
+        if errors:
+            # If there were validation errors, return them
+            return jsonify({"message": "Update failed due to validation errors.", "errors": errors}), 400
+
+        if not updated_fields:
+            # If no fields were provided or the provided data didn't result in a change
+            return jsonify({"message": "No changes detected or no new data provided."}), 200 # Or 400 if you prefer
+
+        try:
+            # Attempt to save changes to the database
+            db.session.commit()
+            print(f"--- Profile updated for User ID: {student.id}. Fields changed: {', '.join(updated_fields)} ---")
+
+            # Return success response, potentially with updated non-sensitive info
+            updated_profile_data = {
+                "id": student.id,
+                "username": student.username,
+                "role": student.role.value
+            }
+            return jsonify({
+                "message": f"Profile updated successfully. ({', '.join(updated_fields)} changed)",
+                "user": updated_profile_data
+                }), 200
+
+        except Exception as e:
+            # Handle potential database errors during commit
+            db.session.rollback()
+            print(f"!!! DATABASE ERROR updating profile for user {student.id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"message": "An internal error occurred while saving profile changes."}), 500
 
 
     # --- MODIFIED: Proctoring Analysis Route (Face Count + Head Pose) ---

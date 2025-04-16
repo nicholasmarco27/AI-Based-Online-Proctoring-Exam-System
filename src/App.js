@@ -9,14 +9,17 @@ import StudentLayout from './layouts/StudentLayout';
 // Import Page Components
 import LoginPage from './components/LoginPage';
 import SignUpPage from './components/SignUpPage';
+
 import AdminDashboard from './pages/admin/AdminDashboard';
 import AdminExamList from './pages/admin/AdminExamList';
-import ExamForm from './pages/admin/ExamForm'; // <-- Import ExamForm for Create/Edit
+import ExamForm from './pages/admin/ExamForm'; 
+import ExamResultAdm from './pages/admin/ExamResultAdm';
+
 import StudentDashboard from './pages/student/StudentDashboard';
 import StudentAvailableExams from './pages/student/StudentAvailableExams';
 import ExamTakingInterface from './pages/student/ExamTakingInterface';
 import ExamSubmittedPage from './pages/student/ExamSubmittedPage';
-import ExamResultAdm from './pages/admin/ExamResultAdm';
+import StudentProfile from './pages/student/StudentProfile';
 // Optional: Placeholder for a generic loading component
 // import LoadingSpinner from './components/LoadingSpinner';
 // Optional: Placeholder for a 404 component
@@ -190,9 +193,9 @@ function App() {
               <Route path="exams" element={<StudentAvailableExams />} /> {/* List available exams */}
               <Route path="take-exam/:examId" element={<ExamTakingInterface />} />
               <Route path="exam/:examId/submitted" element={<ExamSubmittedPage />} />
+              <Route path="profile" element={<StudentProfile />} />
               {/* Add other student-specific routes here (e.g., results, profile, taking an exam) */}
               {/* <Route path="results" element={<StudentResults />} /> */}
-              {/* <Route path="profile" element={<StudentProfile />} /> */}
               {/* Catch-all for any undefined paths under /student */}
               <Route path="*" element={<Navigate to="/student" replace />} />
           </Route>

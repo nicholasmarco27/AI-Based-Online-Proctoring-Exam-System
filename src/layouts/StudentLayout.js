@@ -10,7 +10,7 @@ import {
 import DashboardIcon from '@mui/icons-material/Dashboard';
 import AssignmentTurnedInIcon from '@mui/icons-material/AssignmentTurnedIn';
 import HistoryIcon from '@mui/icons-material/History'; // If using Results page
-import AccountCircleIcon from '@mui/icons-material/AccountCircle'; // If using Profile page
+import AccountCircleIcon from '@mui/icons-material/AccountCircle'; // <-- IMPORTED Profile icon
 // Import common icons
 import MenuIcon from '@mui/icons-material/Menu';
 import LogoutIcon from '@mui/icons-material/Logout';
@@ -30,7 +30,6 @@ function StudentLayout({ onLogout }) {
     const location = useLocation(); // Get current URL location
 
     // --- Check if the student is currently taking an exam ---
-    // This determines whether to show the full layout or just the exam interface
     const isTakingExam = location.pathname.startsWith('/student/take-exam/');
 
     // --- Event Handlers ---
@@ -47,9 +46,9 @@ function StudentLayout({ onLogout }) {
     const menuItems = [
         { text: 'Dashboard', icon: <DashboardIcon />, path: '/student' },
         { text: 'Available Exams', icon: <AssignmentTurnedInIcon />, path: '/student/exams' },
-        // Uncomment these if you implement the corresponding pages/routes
+        // Uncomment 'My Results' if you implement the corresponding page/route
         // { text: 'My Results', icon: <HistoryIcon />, path: '/student/results' },
-        // { text: 'Profile', icon: <AccountCircleIcon />, path: '/student/profile' },
+        { text: 'My Profile', icon: <AccountCircleIcon />, path: '/student/profile' }, // <-- ADDED Profile Item
     ];
 
     // --- Drawer Content (Sidebar) ---
@@ -100,13 +99,10 @@ function StudentLayout({ onLogout }) {
 
 
     // --- Conditional Rendering: Exam Mode vs Normal Mode ---
-
-    // If the student is taking an exam, render ONLY the content area (<Outlet/>)
-    // This effectively hides the AppBar and Drawer.
     if (isTakingExam) {
         return (
             <Box sx={{ width: '100%', height: '100vh', overflow: 'hidden' }}>
-                {/* Outlet renders the nested route component (ExamTakingInterface) */}
+                 {/* Outlet renders the nested route component (ExamTakingInterface) */}
                 <Outlet />
             </Box>
         );
@@ -121,26 +117,24 @@ function StudentLayout({ onLogout }) {
             <AppBar
                 position="fixed"
                 sx={{
-                    // Adjust width and margin to account for the permanent drawer on larger screens
                     width: { sm: `calc(100% - ${drawerWidth}px)` },
                     ml: { sm: `${drawerWidth}px` },
-                    // Style overrides for appearance
-                    backgroundColor: theme.palette.background.paper, // Use paper background color
-                    color: theme.palette.text.primary, // Use primary text color
+                    backgroundColor: theme.palette.background.paper,
+                    color: theme.palette.text.primary,
                 }}
-                elevation={1} // Subtle shadow
+                elevation={1}
             >
                <Toolbar>
                    {/* Hamburger icon for mobile drawer */}
                    <IconButton color="inherit" aria-label="open drawer" edge="start" onClick={handleDrawerToggle} sx={{ mr: 2, display: { sm: 'none' } }}><MenuIcon /></IconButton>
                    {/* Title (optional) */}
-                   <Typography variant="h6" noWrap component="div" sx={{ flexGrow: 1 }}>{/* Can be dynamic based on route */}</Typography>
+                   <Typography variant="h6" noWrap component="div" sx={{ flexGrow: 1 }}>{/* Can be dynamic */}</Typography>
                    {/* User Menu (Avatar, Dropdown) */}
                    <Box sx={{ flexGrow: 0 }}>
                        <Tooltip title="User Options">
                            <IconButton onClick={handleOpenUserMenu} sx={{ p: 0 }}>
                                {/* Placeholder Avatar */}
-                               <Avatar sx={{ bgcolor: theme.palette.primary.main }}>S</Avatar>
+                               <Avatar sx={{ bgcolor: theme.palette.primary.main }}>S</Avatar> {/* Replace 'S' with user initial if available */}
                            </IconButton>
                        </Tooltip>
                        <Menu
@@ -149,11 +143,15 @@ function StudentLayout({ onLogout }) {
                            transformOrigin={{ vertical: 'top', horizontal: 'right' }}
                            open={Boolean(anchorElUser)} onClose={handleCloseUserMenu}
                        >
-                           {/* Add Profile link here if implementing profile page */}
-                           {/* <MenuItem component={RouterLink} to="/student/profile" onClick={handleCloseUserMenu}><ListItemIcon><AccountCircleIcon fontSize="small" /></ListItemIcon>Profile</MenuItem> */}
-                           {/* <Divider /> */}
+                           {/* --- ADDED/UNCOMMENTED Profile link --- */}
+                           <MenuItem component={RouterLink} to="/student/profile" onClick={handleCloseUserMenu}>
+                               <ListItemIcon><AccountCircleIcon fontSize="small" /></ListItemIcon>
+                               Profile
+                            </MenuItem>
+                           <Divider /> {/* Optional: Add a divider */}
                            <MenuItem onClick={handleLogoutClick}>
-                               <ListItemIcon><LogoutIcon fontSize="small" /></ListItemIcon>Logout
+                               <ListItemIcon><LogoutIcon fontSize="small" /></ListItemIcon>
+                               Logout
                            </MenuItem>
                        </Menu>
                    </Box>
@@ -165,7 +163,7 @@ function StudentLayout({ onLogout }) {
                 {/* Temporary Drawer for mobile */}
                 <Drawer
                     variant="temporary" open={mobileOpen} onClose={handleDrawerToggle}
-                    ModalProps={{ keepMounted: true }} // Better open performance on mobile.
+                    ModalProps={{ keepMounted: true }}
                     sx={{ display: { xs: 'block', sm: 'none' }, '& .MuiDrawer-paper': { boxSizing: 'border-box', width: drawerWidth } }}
                 >
                     {drawerContent}
@@ -181,16 +179,14 @@ function StudentLayout({ onLogout }) {
 
              {/* Main Content Area */}
             <Box component="main" sx={{
-                flexGrow: 1, // Takes remaining width
-                p: 3, // Padding around content
-                width: { sm: `calc(100% - ${drawerWidth}px)` }, // Adjust width for drawer
-                minHeight: '100vh', // Ensure it takes full viewport height
-                bgcolor: theme.palette.background.default // Apply background color from theme
+                flexGrow: 1,
+                p: 3,
+                width: { sm: `calc(100% - ${drawerWidth}px)` },
+                minHeight: '100vh',
+                bgcolor: theme.palette.background.default
             }} >
-                {/* Toolbar acts as a spacer to push content below the fixed AppBar */}
-                <Toolbar />
-                {/* Outlet renders the appropriate page component based on the nested route */}
-                <Outlet />
+                <Toolbar /> {/* Spacer */}
+                <Outlet /> {/* Page content */}
             </Box>
         </Box>
     );

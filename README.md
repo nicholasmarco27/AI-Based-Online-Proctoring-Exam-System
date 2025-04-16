@@ -42,12 +42,14 @@ Follow these steps to set up and run the project locally.
 3.  **Set up Frontend:**
     *   Navigate to the frontend directory from the project root:
         ```bash
-        cd ../frontend
+        cd ../src
         # Or if you are still in backend: cd ../frontend
         ```
     *   Install Node.js dependencies:
         ```bash
         npm install
+        npm install date-fns
+        npm install papaparse
         ```
 
 # Running the Application

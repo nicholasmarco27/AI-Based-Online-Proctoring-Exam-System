@@ -14,6 +14,7 @@ import AccountCircleIcon from '@mui/icons-material/AccountCircle'; // <-- IMPORT
 // Import common icons
 import MenuIcon from '@mui/icons-material/Menu';
 import LogoutIcon from '@mui/icons-material/Logout';
+import platformLogo from '../logo-myits-white.svg';
 
 // Standard width for the sidebar drawer
 const drawerWidth = 240;
@@ -48,7 +49,6 @@ function StudentLayout({ onLogout }) {
         { text: 'Available Exams', icon: <AssignmentTurnedInIcon />, path: '/student/exams' },
         // Uncomment 'My Results' if you implement the corresponding page/route
         // { text: 'My Results', icon: <HistoryIcon />, path: '/student/results' },
-        { text: 'My Profile', icon: <AccountCircleIcon />, path: '/student/profile' }, // <-- ADDED Profile Item
     ];
 
     // --- Drawer Content (Sidebar) ---
@@ -56,12 +56,26 @@ function StudentLayout({ onLogout }) {
         <div>
             {/* Toolbar spacer in the drawer */}
             <Toolbar sx={{
-                justifyContent: 'center',
-                bgcolor: theme.palette.primary.main, // Use theme primary color
-                color: theme.palette.primary.contrastText // Use contrast text color
+                justifyContent: 'center',   // Center the content (logo + text group)
+                bgcolor: theme.palette.primary.main,
+                color: theme.palette.primary.contrastText,
+                alignItems: 'center' // Ensure items align vertically in the center
             }}>
+                {/* Logo using Box component */}
+                <Box
+                    component="img"
+                    sx={{
+                        height: 30, // Adjust height as needed
+                        mr: 1.5,    // Add margin to the right (theme spacing units)
+                        // verticalAlign: 'middle' // Alternative alignment if needed
+                    }}
+                    alt="MyITS Platform Logo" // Important for accessibility
+                    src={platformLogo} // Use the imported logo variable
+                />
+
+                {/* Your Title */}
                 <Typography variant="h6" noWrap component="div">
-                    Student Portal
+                    Exam
                 </Typography>
             </Toolbar>
             <Divider />

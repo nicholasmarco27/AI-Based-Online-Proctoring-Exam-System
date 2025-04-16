@@ -724,7 +724,7 @@ function ExamTakingInterface() {
                  {/* Camera Feed */}
                  <Typography variant="subtitle2" sx={{fontWeight: 'bold', mb: -1, color: 'text.secondary'}}>Monitor</Typography>
                  <Box sx={{ width: 160, height: 120, bgcolor: 'grey.300', position: 'relative', overflow: 'hidden', display: 'flex', justifyContent: 'center', alignItems: 'center', border: cameraError ? `2px solid ${theme.palette.error.main}` : 'none', borderRadius: 1 }}>
-                     <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover', display: stream ? 'block' : 'none' }} />
+                     <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover', display: stream ? 'block' : 'none', transform: 'scaleX(-1)' }} />
                      {!stream && !cameraError && !isExamCancelled && <CircularProgress size={24} titleAccess="Starting camera..."/>}
                      {/* Show icon if camera failed or exam ended */}
                      {(cameraError || (!stream && isExamCancelled)) && <VideocamOffIcon color={cameraError ? "error" : "disabled"} sx={{ fontSize: 40 }} titleAccess={cameraError ? cameraError : "Camera off"} />}

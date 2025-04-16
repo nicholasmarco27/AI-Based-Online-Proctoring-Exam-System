@@ -8,10 +8,12 @@ from datetime import datetime, timezone, timedelta
 from werkzeug.security import check_password_hash
 import base64
 import numpy as np
+import io 
 import cv2 # OpenCV for image processing
 import mediapipe as mp # For face detection and mesh
 import threading
 import math # For atan2 in angle calculation
+from datetime import datetime, timedelta
 
 # Import models and config
 from models import db, User, Exam, Question, RoleEnum, ExamStatusEnum, ExamSubmission
@@ -86,7 +88,10 @@ def create_app(config_class=Config):
     except OSError:
         pass # Folder already exists
     db.init_app(app)
-    CORS(app, resources={r"/api/*": {"origins": "http://localhost:3000"}})
+    # Configure CORS to allow requests from localhost:3000 with proper headers
+    CORS(app, resources={r"/*": {"origins": "http://localhost:3000", 
+                                "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+                                "allow_headers": ["Content-Type", "Authorization"]}})
 
 
     # --- Authentication Helper Functions ---
@@ -179,6 +184,51 @@ def create_app(config_class=Config):
         except Exception as e:
             db.session.rollback(); print(f"Error during registration: {e}"); return jsonify({'message': 'Registration failed due to an internal error'}), 500
 
+    @app.route('/api/admin/dashboard/stats', methods=['GET'])
+    @admin_required
+    def get_admin_dashboard_stats():
+        """Calculates and returns key statistics for the admin dashboard."""
+        try:
+            # Calculate Total Exams
+            total_exams = db.session.query(Exam.id).count() # More efficient count
+
+            # Calculate Active Exams (Published)
+            active_exams = db.session.query(Exam.id).filter_by(status=ExamStatusEnum.PUBLISHED).count()
+
+            # Calculate Total Students
+            total_students = db.session.query(User.id).filter_by(role=RoleEnum.STUDENT).count()
+
+            # Calculate Recent Submissions (within last 24 hours)
+            twenty_four_hours_ago = datetime.utcnow() - timedelta(hours=24)
+            recent_submissions = db.session.query(ExamSubmission.id)\
+                                     .filter(ExamSubmission.submitted_at >= twenty_four_hours_ago)\
+                                     .count()
+
+            # Prepare the response data
+            stats_data = {
+                "totalExams": total_exams,
+                "activeExams": active_exams,
+                "totalStudents": total_students,
+                "recentSubmissions": recent_submissions
+            }
+
+            return jsonify(stats_data), 200
+
+        except Exception as e:
+            print(f"Error calculating admin dashboard stats: {e}")
+            import traceback
+            traceback.print_exc()
+            # Return default error values or an error message
+            return jsonify({
+                "message": "Error fetching dashboard statistics.",
+                 # Optionally provide defaults on error:
+                 "totalExams": "Error",
+                 "activeExams": "Error",
+                 "totalStudents": "Error",
+                 "recentSubmissions": "Error"
+            }), 500
+        
+     
     @app.route('/api/admin/exams', methods=['GET'])
     @admin_required
     def get_admin_exams():
@@ -212,6 +262,103 @@ def create_app(config_class=Config):
         except (ValueError, TypeError, KeyError) as e: db.session.rollback(); return jsonify({"message": f"Invalid data: {e}"}), 400
         except Exception as e: db.session.rollback(); print(f"Err: {e}"); return jsonify({"message":"Internal error"}), 500
 
+    @app.route('/api/admin/exams/<int:exam_id>/import_csv', methods=['POST'])
+    @admin_required
+    def import_questions_from_csv(exam_id):
+        """Imports questions from a CSV file for a specific exam."""
+        exam = Exam.query.get_or_404(exam_id)
+
+        if 'file' not in request.files:
+            return jsonify({"message": "No file part in the request"}), 400
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({"message": "No selected file"}), 400
+
+        if file and file.filename.lower().endswith('.csv'):
+            try:
+                # Baca file CSV langsung dari stream request menggunakan Pandas
+                # Gunakan io.StringIO untuk membaca konten file sebagai string
+                stream = io.StringIO(file.stream.read().decode("UTF8"), newline=None)
+                df = pd.read_csv(stream)
+
+                # --- Validasi Nama Kolom ---
+                required_columns = ['question', 'option1', 'option2', 'option3', 'option4', 'correct_answer']
+                if not all(col in df.columns for col in required_columns):
+                    missing = [col for col in required_columns if col not in df.columns]
+                    return jsonify({"message": f"CSV file is missing required columns: {', '.join(missing)}"}), 400
+
+                # Hapus pertanyaan lama jika diinginkan (opsional, sesuai kebutuhan)
+                # Question.query.filter_by(exam_id=exam_id).delete()
+                # print(f"--- Deleted existing questions for exam {exam_id} before import ---")
+
+                new_questions_added = 0
+                errors = []
+                for index, row in df.iterrows():
+                    try:
+                        question_text = str(row['question']).strip()
+                        # Ambil semua opsi yang ada (tidak NaN atau kosong)
+                        options = [
+                            str(row[f'option{i}']).strip()
+                            for i in range(1, 5) # Asumsi hingga 4 opsi
+                            if pd.notna(row[f'option{i}']) and str(row[f'option{i}']).strip()
+                        ]
+                        correct_answer_text = str(row['correct_answer']).strip()
+
+                        # --- Validasi Data Baris ---
+                        if not question_text:
+                            errors.append(f"Row {index + 2}: Question text cannot be empty.")
+                            continue
+                        if not options:
+                            errors.append(f"Row {index + 2}: At least one option is required.")
+                            continue
+                        if not correct_answer_text:
+                            errors.append(f"Row {index + 2}: Correct answer cannot be empty.")
+                            continue
+                        if correct_answer_text not in options:
+                            errors.append(f"Row {index + 2}: Correct answer '{correct_answer_text}' is not listed in the options {options}.")
+                            continue
+
+                        # Buat objek Question baru
+                        new_question = Question(
+                            exam_id=exam.id,
+                            text=question_text,
+                            options=options,  # Gunakan setter property untuk konversi ke JSON
+                            correct_answer=correct_answer_text
+                        )
+                        db.session.add(new_question)
+                        new_questions_added += 1
+
+                    except Exception as row_error:
+                        # Tangkap error spesifik per baris
+                        errors.append(f"Row {index + 2}: Error processing - {row_error}")
+                        continue # Lanjut ke baris berikutnya
+
+                if errors:
+                    # Jika ada error, rollback perubahan dan laporkan error
+                    db.session.rollback()
+                    return jsonify({
+                        "message": "Import failed due to errors in the CSV data.",
+                        "errors": errors
+                    }), 400
+                else:
+                    # Jika tidak ada error, commit semua pertanyaan baru
+                    db.session.commit()
+                    return jsonify({
+                        "message": f"Successfully imported {new_questions_added} questions for exam '{exam.name}'."
+                    }), 201
+
+            except pd.errors.EmptyDataError:
+                db.session.rollback()
+                return jsonify({"message": "CSV file is empty."}), 400
+            except Exception as e:
+                db.session.rollback()
+                print(f"Error importing CSV for exam {exam_id}: {e}")
+                import traceback
+                traceback.print_exc()
+                return jsonify({"message": f"An error occurred during CSV processing: {e}"}), 500
+        else:
+            return jsonify({"message": "Invalid file type. Please upload a CSV file."}), 400
+        
     @app.route('/api/admin/exams/<int:exam_id>', methods=['GET'])
     @admin_required
     def get_exam(exam_id):
@@ -614,4 +761,4 @@ def create_app(config_class=Config):
 # --- Run the Flask Development Server ---
 if __name__ == '__main__':
     app = create_app()
-    app.run(debug=True, port=5000, threaded=True) # Use threaded=True
+    app.run(debug=True, port=5001, threaded=True) # Use threaded=True

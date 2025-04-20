@@ -428,8 +428,40 @@ def create_app(config_class=Config):
     @app.route('/api/student/exams/available', methods=['GET'])
     @student_required
     def get_student_available_exams():
-        exams = Exam.query.filter_by(status=ExamStatusEnum.PUBLISHED).all()
-        return jsonify([exam.to_dict(include_questions=False) for exam in exams])
+        user_id = g.current_user.id
+        try:
+            # 1. Ambil semua ujian yang statusnya PUBLISHED
+            #    (Kita tidak filter berdasarkan attempt di sini lagi)
+            published_exams = Exam.query.filter_by(status=ExamStatusEnum.PUBLISHED).all()
+
+            # 2. Siapkan list untuk hasil akhir
+            exams_with_attempts_info = []
+
+            # 3. Loop melalui setiap ujian published
+            for exam in published_exams:
+                # 4. Hitung berapa kali siswa ini sudah submit ujian ini
+                attempts_taken = ExamSubmission.query.filter_by(
+                    user_id=user_id,
+                    exam_id=exam.id
+                ).count()
+
+                # 5. Buat dictionary untuk ujian ini
+                exam_data = exam.to_dict(include_questions=False) # Ambil data dasar exam
+
+                # 6. TAMBAHKAN informasi attempts_taken ke dictionary
+                exam_data['attemptsTaken'] = attempts_taken
+
+                # 7. Masukkan ke list hasil
+                exams_with_attempts_info.append(exam_data)
+
+            # 8. Kembalikan list ujian beserta info attempt
+            return jsonify(exams_with_attempts_info)
+
+        except Exception as e:
+            print(f"Error fetching available exams with attempts for user {user_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"message": "Failed to load exam data."}), 500
 
     @app.route('/api/student/exams/<int:exam_id>/take', methods=['GET'])
     @student_required
@@ -550,6 +582,64 @@ def create_app(config_class=Config):
             traceback.print_exc() # Cetak traceback lengkap untuk debugging
             return jsonify({"message": "An internal server error occurred during exam submission. Please try again or contact support."}), 500
 
+    @app.route('/api/student/exams/<int:exam_id>/submission/latest', methods=['GET']) # Decorator pertama
+    @student_required # Decorator kedua, indentasi sama
+    def get_latest_submission_for_exam(exam_id): # Definisi fungsi, indentasi sama
+        # Badan fungsi dimulai dengan indentasi 4 spasi (atau 1 tab)
+        user_id = g.current_user.id
+        print(f"--- Fetching latest submission for User ID: {user_id}, Exam ID: {exam_id} ---")
+        try:
+            # Cari submission TERBARU untuk user dan exam ini
+            # Menggunakan tanda kurung untuk chain panjang agar lebih aman
+            latest_submission = (
+                ExamSubmission.query
+                .filter_by(user_id=user_id, exam_id=exam_id)
+                .order_by(ExamSubmission.submitted_at.desc())
+                .options(joinedload(ExamSubmission.exam)) # Eager load data exam jika perlu
+                .first() # Ambil hanya yang paling baru
+            ) # Tutup tanda kurung untuk chain
+
+            if not latest_submission:
+                print(f"--- No submission found for User ID: {user_id}, Exam ID: {exam_id} ---")
+                return jsonify({"message": "No submission found for this exam."}), 404
+
+            # Ambil detail exam dari submission yang di-load
+            exam = latest_submission.exam
+            if not exam:
+                 # Fallback jika relasi exam tidak ada
+                 print(f"[Warning] Could not load Exam details for Submission ID: {latest_submission.id}")
+                 exam_name = "Unknown Exam"
+                 attempts_allowed = 1 # Default fallback
+                 course_id = "unknown-course"
+            else:
+                 exam_name = exam.name
+                 attempts_allowed = exam.allowed_attempts
+                 course_id = "temp-course-id" # Ganti jika perlu
+
+            # Siapkan data yang akan dikirim ke frontend
+            submission_data = {
+                "submissionId": latest_submission.id,
+                "examId": latest_submission.exam_id,
+                "examName": exam_name,
+                "quizName": f"Results for {exam_name}",
+                "status": "Finished",
+                "submittedAt": latest_submission.submitted_at.isoformat() + 'Z',
+                "score": latest_submission.score,
+                "correctAnswers": latest_submission.correct_answers_count,
+                "totalQuestions": latest_submission.total_questions_count,
+                "attemptsAllowed": attempts_allowed,
+                "courseId": course_id,
+                "reviewUrl": None
+            }
+            print(f"--- Found submission ID: {latest_submission.id}, sending data to frontend ---")
+            return jsonify(submission_data), 200
+
+        except Exception as e:
+            print(f"!!! ERROR fetching latest submission for User {user_id}, Exam {exam_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"message": "An internal server error occurred."}), 500
+        
     @app.route('/api/student/dashboard', methods=['GET'])
     @student_required
     def get_student_dashboard_data():

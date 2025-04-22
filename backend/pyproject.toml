@@ -13,6 +13,7 @@ dependencies = [
     "opencv-python-headless",
     "numpy",
     "Pillow",
+    "Pandas",
     "Flask-SocketIO",
     "eventlet",
     "mediapipe==0.10.14",

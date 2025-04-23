@@ -2,23 +2,51 @@
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 import enum
-import json # To handle options storage
-from datetime import datetime
+import json # To handle JSON storage for options/answers
+from datetime import datetime, timezone # Use timezone-aware datetimes
+import logging # Use logging for warnings
+
+# Get the logger instance
+log = logging.getLogger(__name__)
 
 db = SQLAlchemy()
 
+# --- Association Table: User <-> UserGroup ---
+user_group_membership = db.Table('user_group_membership',
+    db.Column('user_id', db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), primary_key=True), # Added ondelete
+    db.Column('group_id', db.Integer, db.ForeignKey('user_group.id', ondelete='CASCADE'), primary_key=True) # Added ondelete
+)
+
+# --- Association Table: Exam <-> UserGroup ---
+exam_group_assignment = db.Table('exam_group_assignment',
+    db.Column('exam_id', db.Integer, db.ForeignKey('exam.id', ondelete='CASCADE'), primary_key=True), # Added ondelete
+    db.Column('group_id', db.Integer, db.ForeignKey('user_group.id', ondelete='CASCADE'), primary_key=True) # Added ondelete
+)
+
 class RoleEnum(enum.Enum):
-    # ... (keep existing RoleEnum)
     ADMIN = 'admin'
     STUDENT = 'student'
 
 class User(db.Model):
-    # ... (keep existing User model)
+    __tablename__ = 'user' # Explicit table name
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.String(256), nullable=False) # Increased length for hash
     role = db.Column(db.Enum(RoleEnum), nullable=False, default=RoleEnum.STUDENT)
-    submissions = db.relationship('ExamSubmission', back_populates='student', lazy=True)
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)) # Use timezone=True
+
+    # Relationships
+    # When a user is deleted, their submissions are also deleted
+    submissions = db.relationship('ExamSubmission', back_populates='student', lazy='dynamic', cascade="all, delete-orphan")
+
+    # Many-to-many relationship to UserGroup
+    # When a user is deleted, their membership entries are removed (handled by cascade on ForeignKey in table)
+    groups = db.relationship(
+        'UserGroup',
+        secondary=user_group_membership,
+        lazy='subquery', # Efficiently loads groups when user is loaded
+        back_populates='students' # Links back from UserGroup.students
+    )
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -29,157 +57,297 @@ class User(db.Model):
     def __repr__(self):
         return f'<User {self.username}>'
 
-    def to_dict(self):
-        return {
+    def to_dict(self, include_groups=False):
+        """Serializes the User object to a dictionary."""
+        data = {
             'id': self.id,
             'username': self.username,
-            'role': self.role.value
+            'role': self.role.value,
+            'created_at': self.created_at.isoformat() if self.created_at else None
         }
+        if include_groups:
+            # Include only basic group info
+            # Add check for self.groups in case relationship loading fails (unlikely with subquery)
+            try:
+                data['groups'] = [{'id': g.id, 'name': g.name} for g in self.groups or []]
+            except Exception as e:
+                log.error(f"Error serializing groups for User ID {self.id}: {e}", exc_info=True) # Log traceback
+                data['groups'] = [] # Gracefully handle error
+        return data
 
+class UserGroup(db.Model):
+    __tablename__ = 'user_group' # Explicit table name
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), unique=True, nullable=False)
+    description = db.Column(db.String(255), nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)) # Use timezone=True
+
+    # Many-to-many relationship back to User
+    students = db.relationship(
+        'User',
+        secondary=user_group_membership,
+        lazy='subquery',
+        back_populates='groups'
+    )
+
+    # Many-to-many relationship to Exam
+    exams = db.relationship(
+        'Exam',
+        secondary=exam_group_assignment,
+        lazy='subquery',
+        back_populates='assigned_groups' # Matches Exam.assigned_groups
+    )
+
+    def __repr__(self):
+        return f'<UserGroup {self.name}>'
+
+    def to_dict(self, include_students=False, include_exams=False):
+        """Serializes the UserGroup object to a dictionary."""
+        student_count = 0
+        try:
+             # Calculate count safely
+             student_count = len(self.students) if self.students else 0
+        except Exception as e:
+            log.warning(f"Could not determine student count for Group ID {self.id}: {e}")
+
+        data = {
+            'id': self.id,
+            'name': self.name,
+            'description': self.description,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'student_count': student_count
+        }
+        if include_students:
+            try:
+                data['students'] = [{'id': s.id, 'username': s.username} for s in self.students or []]
+            except Exception as e:
+                log.error(f"Error serializing students for Group ID {self.id}: {e}", exc_info=True) # Log traceback
+                data['students'] = []
+        if include_exams: # Optional: Serialize assigned exams if needed
+            try:
+                 data['exams'] = [{'id': e.id, 'name': e.name} for e in self.exams or []]
+            except Exception as e:
+                 log.error(f"Error serializing exams for Group ID {self.id}: {e}", exc_info=True) # Log traceback
+                 data['exams'] = []
+        return data
+
+# --- Exam Related Models ---
 
 class ExamStatusEnum(enum.Enum):
-    # ... (keep existing ExamStatusEnum)
-    DRAFT = 'Draft'
-    PUBLISHED = 'Published'
-    ARCHIVED = 'Archived'
+    DRAFT = 'Draft'         # Exam is being created, not visible to students
+    PUBLISHED = 'Published' # Exam is available for students (or specific groups)
+    ARCHIVED = 'Archived'   # Exam is finished, results stored, not available
 
-# --- New Question Model ---
 class Question(db.Model):
+    __tablename__ = 'question' # Explicit table name
     id = db.Column(db.Integer, primary_key=True)
-    exam_id = db.Column(db.Integer, db.ForeignKey('exam.id'), nullable=False)
+    exam_id = db.Column(db.Integer, db.ForeignKey('exam.id', ondelete='CASCADE'), nullable=False) # Added ondelete
     text = db.Column(db.Text, nullable=False)
-    # Store options as a JSON string (list of strings) for simplicity
+    # Store options as a JSON string for variable number of options
     options_json = db.Column(db.Text, nullable=False)
-    # Store the correct answer as one of the strings from the options list
-    correct_answer = db.Column(db.String(255), nullable=False)
-    # Add points if needed: points = db.Column(db.Integer, default=1)
+    # Store the correct answer text (must match one of the options)
+    correct_answer = db.Column(db.Text, nullable=False)
 
-    # Back-reference in Exam model will be named 'questions'
+    # Relationship back to Exam
     exam = db.relationship('Exam', back_populates='questions')
 
     @property
     def options(self):
         """Get options as a Python list."""
-        return json.loads(self.options_json)
+        # Ensure options_json is not None before trying to load
+        if self.options_json is None:
+            return []
+        try:
+            # Handle potential non-string values before loading
+            if isinstance(self.options_json, bytes):
+                options_str = self.options_json.decode('utf-8')
+            else:
+                options_str = str(self.options_json)
+            return json.loads(options_str)
+        except (json.JSONDecodeError, TypeError) as e:
+            # Log the error for better debugging
+            log.warning(f"Could not decode options_json for Question ID {self.id}. Value: '{self.options_json}'. Error: {e}")
+            return [] # Return empty list if invalid JSON or None
+        except Exception as e:
+            log.error(f"Unexpected error decoding options for Question ID {self.id}: {e}", exc_info=True)
+            return []
 
     @options.setter
     def options(self, value):
         """Set options from a Python list."""
         if not isinstance(value, list):
             raise ValueError("Options must be a list")
-        self.options_json = json.dumps(value)
+        # Store non-empty, stripped strings
+        self.options_json = json.dumps([str(opt).strip() for opt in value if str(opt).strip()])
 
     def __repr__(self):
         return f'<Question {self.id} for Exam {self.exam_id}>'
 
     def to_dict(self):
+        """Serializes the Question object to a dictionary."""
+        # Use try-except when accessing the property just in case
+        opts = []
+        try:
+            opts = self.options
+        except Exception as e:
+            log.error(f"Error accessing options property for Question ID {self.id}: {e}", exc_info=True)
+
         return {
             'id': self.id,
             'exam_id': self.exam_id,
             'text': self.text,
-            'options': self.options, # Use the property to get list
+            'options': opts, # Use the safe value
             'correct_answer': self.correct_answer,
-            # 'points': self.points,
         }
 
 class Exam(db.Model):
+    __tablename__ = 'exam' # Explicit table name
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(150), nullable=False)
-    subject = db.Column(db.String(100), nullable=False)
-    duration = db.Column(db.Integer) # In minutes
+    subject = db.Column(db.String(100), nullable=True) # Allow subject to be optional?
+    duration = db.Column(db.Integer, nullable=False) # Duration in minutes
     status = db.Column(db.Enum(ExamStatusEnum), nullable=False, default=ExamStatusEnum.DRAFT)
-
-    # --- NEW FIELDS ---
     allowed_attempts = db.Column(db.Integer, nullable=False, default=1) # Default to 1 attempt
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)) # Added created_at
 
-    # --- Add relationship to Question ---
-    # cascade="all, delete-orphan": delete questions when exam is deleted
-    questions = db.relationship('Question', back_populates='exam', lazy=True, cascade="all, delete-orphan")
-    submissions = db.relationship('ExamSubmission', back_populates='exam', lazy=True)
-    
+    # Relationships
+    # Use lazy='dynamic' for large collections you might filter/count later
+    questions = db.relationship('Question', back_populates='exam', lazy='dynamic', cascade="all, delete-orphan")
+    submissions = db.relationship('ExamSubmission', back_populates='exam', lazy='dynamic', cascade="all, delete-orphan")
+
+    # Many-to-many relationship to UserGroup
+    assigned_groups = db.relationship(
+        'UserGroup',
+        secondary=exam_group_assignment,
+        lazy='subquery', # Load groups efficiently when exam is loaded
+        back_populates='exams' # Matches UserGroup.exams
+    )
+
     def __repr__(self):
-        return f'<Exam {self.name}>'
+        return f'<Exam {self.name} (ID: {self.id})>'
 
-    def to_dict(self, include_questions=False):
-        # --- Update serialization ---
+    def to_dict(self, include_questions=False, include_groups=False):
+        """Serializes the Exam object to a dictionary."""
+        question_count = 0
+        try:
+            # Correct usage with lazy='dynamic' - performs a count query safely
+            question_count = self.questions.count()
+        except Exception as e:
+            log.warning(f"Could not count questions for Exam ID {self.id}: {e}")
+
         data = {
             'id': self.id,
             'name': self.name,
             'subject': self.subject,
             'duration': self.duration,
-            'status': self.status.value,
-            # Format dates to ISO string (or None). Frontend needs to handle None.
-            # Use isoformat() which includes timezone info if the datetime object has it (SQLAlchemy usually stores timezone-naive in SQLite)
+            'status': self.status.value if self.status else None, # Handle potential None status
             'allowed_attempts': self.allowed_attempts,
-            # Keep dummy fields needed by frontend for now
-            'startDate': 'N/A', # No longer relevant, keep or remove? Let's remove from core dict
-            'students': 0, # This would require tracking submissions/assignments
-             # For StudentAvailableExams card (can be refined)
-            'availableFrom': 'N/A', # No longer relevant
-            'availableTo': 'N/A',   # No longer relevant
-            'attemptsTaken': 0, # Needs real submission tracking later
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'question_count': question_count
         }
 
         if include_questions:
-             # Serialize related questions if requested
-             data['questions'] = [q.to_dict() for q in self.questions]
-        return data
-    
-    # Example methods (implement logic based on submissions)
-    def get_student_count(self):
-        # Query distinct users from submissions for this exam
-        # return ExamSubmission.query.filter_by(exam_id=self.id).distinct(ExamSubmission.user_id).count() # Adjust based on DB dialect
-        return len({sub.user_id for sub in self.submissions}) # Simpler alternative
+            # Serialize related questions if requested
+            q_list = []
+            try:
+                 # Use .all() since questions relationship is lazy='dynamic'
+                 # Wrap individual q.to_dict() calls to prevent one bad question stopping all
+                 all_questions = self.questions.all() if self.questions else []
+                 for q in all_questions:
+                     try:
+                         q_list.append(q.to_dict())
+                     except Exception as q_e:
+                         log.error(f"Error serializing Question ID {q.id} for Exam ID {self.id}: {q_e}", exc_info=True)
+                 data['questions'] = q_list
+            except Exception as e:
+                 log.error(f"Error accessing questions relationship for Exam ID {self.id}: {e}", exc_info=True)
+                 data['questions'] = [] # Return empty list or indicate error
 
-    def get_total_attempts_count(self):
-        # Query total submissions for this exam
-        return len(self.submissions)
+        # Include assigned group IDs and names if requested
+        if include_groups:
+            try:
+                 # Add check for self.assigned_groups
+                 data['assigned_groups'] = [{'id': g.id, 'name': g.name} for g in self.assigned_groups or []]
+            except Exception as e:
+                 log.error(f"Error serializing assigned groups for Exam ID {self.id}: {e}", exc_info=True)
+                 data['assigned_groups'] = [] # Return empty list or indicate error
+
+        # Ensure return is outside the if blocks
+        return data
+
+    # Example helper methods (consider efficiency for large datasets)
+    # def get_student_count(self):
+    #     # Query distinct users from submissions for this exam
+    #     return db.session.query(ExamSubmission.user_id).filter(ExamSubmission.exam_id == self.id).distinct().count()
+
+    # def get_total_attempts_count(self):
+    #     # Query total submissions for this exam
+    #     return self.submissions.count() # Correct for lazy='dynamic'
+
 
 class ExamSubmission(db.Model):
+    __tablename__ = 'exam_submission' # Explicit table name
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    exam_id = db.Column(db.Integer, db.ForeignKey('exam.id'), nullable=False)
-    submitted_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-    score = db.Column(db.Float, nullable=False) # Or db.Integer depending on how you score
-    correct_answers_count = db.Column(db.Integer, nullable=False)
-    total_questions_count = db.Column(db.Integer, nullable=False) # Store total at time of submission
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False) # Added ondelete
+    exam_id = db.Column(db.Integer, db.ForeignKey('exam.id', ondelete='CASCADE'), nullable=False) # Added ondelete
+    submitted_at = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    score = db.Column(db.Float, nullable=True) # Score might be calculated later or might not apply
+    correct_answers_count = db.Column(db.Integer, nullable=True)
+    total_questions_count = db.Column(db.Integer, nullable=True) # Store total at time of submission
 
-    # Store the actual answers given by the student (e.g., as JSON)
-    # Key: question_id, Value: selected_option
-    answers_json = db.Column(db.Text, nullable=True) # Store as JSON string
+    # SQLAlchemy handles Python dict <-> JSON conversion for supported DBs (PostgreSQL, SQLite, MySQL)
+    answers = db.Column(db.JSON, nullable=True)
 
     # Relationships
-    student = db.relationship('User', back_populates='submissions')
-    exam = db.relationship('Exam', back_populates='submissions')
+    student = db.relationship('User', back_populates='submissions', lazy='joined') # Use joined load for common access
+    exam = db.relationship('Exam', back_populates='submissions', lazy='joined') # Use joined load
 
-    @property
-    def answers(self):
-        """Get answers as a Python dict."""
-        if self.answers_json:
-            return json.loads(self.answers_json)
-        return {}
-
-    @answers.setter
-    def answers(self, value):
-        """Set answers from a Python dict."""
-        if not isinstance(value, dict):
-            raise ValueError("Answers must be a dictionary")
-        self.answers_json = json.dumps(value)
 
     def __repr__(self):
-        return f'<ExamSubmission User {self.user_id} for Exam {self.exam_id} at {self.submitted_at}>'
+         # Safely represent object even if relationships are not loaded or None
+        user_repr = f"User ID: {self.user_id}"
+        exam_repr = f"Exam ID: {self.exam_id}"
+        try:
+            if self.student:
+                user_repr = self.student.username
+        except Exception: pass # Ignore errors during repr
+        try:
+            if self.exam:
+                exam_repr = self.exam.name
+        except Exception: pass # Ignore errors during repr
+        return f'<ExamSubmission ID: {self.id}, User: {user_repr}, Exam: {exam_repr}>'
+
 
     def to_dict(self):
+        """Serializes the ExamSubmission object to a dictionary."""
+        # Use try-except for accessing related object attributes in case they are None (e.g., deleted user/exam)
+        student_username = None
+        exam_name = None
+        try:
+            # Check if the relation is loaded and not None
+            if self.student:
+                student_username = self.student.username
+        except Exception as e:
+             log.warning(f"Error accessing student username for Submission ID {self.id}: {e}")
+
+        try:
+            # Check if the relation is loaded and not None
+            if self.exam:
+                exam_name = self.exam.name
+        except Exception as e:
+            log.warning(f"Error accessing exam name for Submission ID {self.id}: {e}")
+
+
         return {
             'id': self.id,
             'user_id': self.user_id,
             'exam_id': self.exam_id,
-            'submitted_at': self.submitted_at.isoformat() + 'Z', # ISO 8601 format, Z for UTC
+            'submitted_at': self.submitted_at.isoformat() if self.submitted_at else None,
             'score': self.score,
             'correct_answers_count': self.correct_answers_count,
             'total_questions_count': self.total_questions_count,
-            'answers': self.answers, # Include the parsed answers
-            # Optionally include related data if needed often
-            'student_username': self.student.username if self.student else None,
-            'exam_name': self.exam.name if self.exam else None,
+             # Access the db.JSON column directly. SQLAlchemy handles the load/dump.
+            'answers': self.answers,
+            'student_username': student_username,
+            'exam_name': exam_name,
         }

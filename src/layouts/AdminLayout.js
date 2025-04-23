@@ -4,11 +4,13 @@ import { Box, Drawer, AppBar, Toolbar, List, ListItem, ListItemButton, ListItemI
 import DashboardIcon from '@mui/icons-material/Dashboard';
 import AssignmentIcon from '@mui/icons-material/Assignment';
 import QuestionAnswerIcon from '@mui/icons-material/QuestionAnswer';
+import GroupIcon from '@mui/icons-material/Group';
 import PeopleIcon from '@mui/icons-material/People';
 import BarChartIcon from '@mui/icons-material/BarChart';
 import SettingsIcon from '@mui/icons-material/Settings';
 import MenuIcon from '@mui/icons-material/Menu';
 import LogoutIcon from '@mui/icons-material/Logout';
+import platformLogo from '../logo-myits-white.svg';
 
 const drawerWidth = 240;
 
@@ -35,6 +37,7 @@ function AdminLayout({ onLogout }) {
   const menuItems = [
     { text: 'Dashboard', icon: <DashboardIcon />, path: '/admin' },
     { text: 'Exams', icon: <AssignmentIcon />, path: '/admin/exams' },
+    { text: 'Users', icon: <GroupIcon />, path: '/admin/usergroups' },
     // { text: 'Question Bank', icon: <QuestionAnswerIcon />, path: '/admin/questions' },
     // { text: 'Users', icon: <PeopleIcon />, path: '/admin/users' },
     // { text: 'Results', icon: <BarChartIcon />, path: '/admin/results' },
@@ -43,13 +46,29 @@ function AdminLayout({ onLogout }) {
 
   const drawerContent = (
     <div>
-      <Toolbar sx={{ justifyContent: 'center', // Center logo/title in toolbar
-           bgcolor: theme.palette.primary.main, // Use theme color
-           color: theme.palette.primary.contrastText }}>
-         <Typography variant="h6" noWrap component="div">
-            Admin Portal
-          </Typography>
-      </Toolbar>
+      <Toolbar sx={{
+                      justifyContent: 'center',   // Center the content (logo + text group)
+                      bgcolor: theme.palette.primary.main,
+                      color: theme.palette.primary.contrastText,
+                      alignItems: 'center' // Ensure items align vertically in the center
+                  }}>
+                      {/* Logo using Box component */}
+                      <Box
+                          component="img"
+                          sx={{
+                              height: 30, // Adjust height as needed
+                              mr: 1.5,    // Add margin to the right (theme spacing units)
+                              // verticalAlign: 'middle' // Alternative alignment if needed
+                          }}
+                          alt="MyITS Platform Logo" // Important for accessibility
+                          src={platformLogo} // Use the imported logo variable
+                      />
+      
+                      {/* Your Title */}
+                      <Typography variant="h6" noWrap component="div">
+                          Admin
+                      </Typography>
+                  </Toolbar>
       <Divider />
       <List>
         {menuItems.map((item) => (

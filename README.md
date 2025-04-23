@@ -48,10 +48,6 @@ Follow these steps to set up and run the project locally.
     *   Install Node.js dependencies:
         ```bash
         npm install
-        npm install date-fns
-        npm install papaparse
-        npm install xlsx
-        npm install chart.js react-chartjs-2
         ```
 
 # Running the Application

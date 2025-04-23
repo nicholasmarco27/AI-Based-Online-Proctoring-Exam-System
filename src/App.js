@@ -14,12 +14,14 @@ import AdminDashboard from './pages/admin/AdminDashboard';
 import AdminExamList from './pages/admin/AdminExamList';
 import ExamForm from './pages/admin/ExamForm'; 
 import ExamResultAdm from './pages/admin/ExamResultAdm';
+import UserManagement from './pages/admin/UserManagement';
 
 import StudentDashboard from './pages/student/StudentDashboard';
 import StudentAvailableExams from './pages/student/StudentAvailableExams';
 import ExamTakingInterface from './pages/student/ExamTakingInterface';
 import ExamSubmittedPage from './pages/student/ExamSubmittedPage';
 import StudentProfile from './pages/student/StudentProfile';
+
 // Optional: Placeholder for a generic loading component
 // import LoadingSpinner from './components/LoadingSpinner';
 // Optional: Placeholder for a 404 component
@@ -178,6 +180,7 @@ function App() {
               <Route path="exams/:examId/edit" element={<ExamForm />} /> {/* Edit existing exam */}
               <Route path="exams/:examId/results" element={<ExamResultAdm />} /> {/* View results for a specific exam */}
               <Route path="exams/:examId/results/:submissionId" element={<ExamResultAdm />} /> {/* View results for a specific submission */}       
+              <Route path="usergroups" element={<UserManagement />} />
               {/* Add other admin-specific routes here (e.g., users, results) */}
               {/* <Route path="users" element={<AdminUserManagement />} /> */}
               {/* Catch-all for any undefined paths under /admin */}

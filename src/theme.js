@@ -1,11 +1,11 @@
 // src/theme.js
 import { createTheme } from '@mui/material/styles';
-import { blue, pink } from '@mui/material/colors';
+import { indigo, pink } from '@mui/material/colors';
 
 const theme = createTheme({
   palette: {
     primary: {
-      main: blue[700], // A nice blue
+      main: indigo[900], // A deep indigo color
     },
     secondary: {
       main: pink[500], // A contrasting pink
@@ -16,7 +16,7 @@ const theme = createTheme({
     }
   },
   typography: {
-    fontFamily: '"Roboto", "Helvetica", "Arial", sans-serif',
+    fontFamily: '"Roboto", "Helvetica", "Arial", "Montserrat", sans-serif',
     h4: {
         fontWeight: 600,
     },

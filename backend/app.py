@@ -6,6 +6,7 @@ from functools import wraps
 import jwt
 from datetime import datetime, timezone, timedelta
 from werkzeug.security import check_password_hash
+import enum
 import io # Keep for CSV
 import logging # Import logging
 

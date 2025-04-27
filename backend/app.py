@@ -12,7 +12,7 @@ import logging # Import logging
 
 # Import models and config
 # Make sure UserGroup is imported
-from models import db, User, Exam, Question, RoleEnum, ExamStatusEnum, ExamSubmission, UserGroup
+from models import db, User, Exam, Question, RoleEnum, ExamStatusEnum, ExamSubmission, UserGroup, NotificationLog, NotificationType
 from config import Config
 from dotenv import load_dotenv
 
@@ -776,17 +776,15 @@ def create_app(config_class=Config):
     @app.route('/api/student/exams/available', methods=['GET'])
     @student_required
     def get_student_available_exams():
-        """Gets exams available to the current student (Published and assigned to their groups, or assigned to no groups)."""
+        """Gets exams available to the current student including previous submission summaries."""
         student = g.current_user
-        app.logger.info(f"Student {student.id}: Fetching available exams.")
-        try:
+        app.logger.info(f"Student {student.id}: Fetching available exams with history.")
+        try: # <-- AWAL BLOK TRY
             # Get IDs of groups the student belongs to
             student_group_ids = {group.id for group in student.groups}
             app.logger.debug(f"Student {student.id} belongs to group IDs: {student_group_ids}")
 
-            # Query for published exams that are either:
-            # 1. Not assigned to any group (public)
-            # 2. Assigned to at least one group the student is in
+            # Query for published exams relevant to the student
             query = Exam.query.filter(Exam.status == ExamStatusEnum.PUBLISHED)\
                               .outerjoin(Exam.assigned_groups)\
                               .filter(
@@ -797,20 +795,55 @@ def create_app(config_class=Config):
             available_exams = query.order_by(Exam.created_at.desc()).all()
             app.logger.info(f"Found {len(available_exams)} available exams for student {student.id}.")
 
-            # Add submission status/attempts taken for each exam for this student
-            results = []
-            for exam in available_exams:
-                exam_data = exam.to_dict(include_questions=False, include_groups=False)
-                # Query attempts specifically for this student and exam
-                attempts = ExamSubmission.query.filter_by(user_id=student.id, exam_id=exam.id).count()
-                exam_data['attempts_taken'] = attempts
-                exam_data['can_attempt'] = attempts < exam.allowed_attempts
-                results.append(exam_data)
+            results = [] # Pindahkan inisialisasi results ke dalam try
 
+            # --- Loop HARUS di dalam try ---
+            for exam in available_exams:
+                # Konversi exam dasar ke dictionary
+                exam_data = exam.to_dict(include_questions=False, include_groups=False)
+
+                # Hitung total attempts
+                # Pastikan query ini tidak error jika exam.id null (seharusnya tidak mungkin di sini)
+                attempts_taken_count = ExamSubmission.query.filter_by(user_id=student.id, exam_id=exam.id).count()
+                exam_data['attempts_taken'] = attempts_taken_count
+                # Perbandingan attempts (pastikan allowed_attempts ada di exam_data atau exam object)
+                # Ambil allowed_attempts dari exam object langsung untuk keamanan
+                exam_data['can_attempt'] = attempts_taken_count < exam.allowed_attempts
+
+                # Ambil Detail Submission Sebelumnya
+                previous_submissions_query = ExamSubmission.query.filter_by(user_id=student.id, exam_id=exam.id)\
+                                                            .order_by(ExamSubmission.submitted_at.asc())\
+                                                            .all()
+
+                # Format data submission sebelumnya
+                exam_data['previous_submissions'] = [] # Inisialisasi list kosong
+                if attempts_taken_count > 0 and previous_submissions_query: # Cek jika ada attempt dan query mengembalikan hasil
+                    app.logger.debug(f"Processing {len(previous_submissions_query)} submissions for exam {exam.id}, student {student.id}")
+                    for sub in previous_submissions_query:
+                        # Buat dictionary untuk setiap submission
+                        submission_summary = {
+                            'submissionId': sub.id,
+                            'submittedAt': sub.submitted_at.isoformat() if sub.submitted_at else None,
+                            'score': sub.score,
+                            'correctAnswers': sub.correct_answers_count,
+                            'totalQuestions': sub.total_questions_count
+                        }
+                        exam_data['previous_submissions'].append(submission_summary)
+                # else: # Tidak perlu log jika memang tidak ada submission
+                    # app.logger.debug(f"No previous submissions found for exam {exam.id}, student {student.id}")
+
+                # Tambahkan data ujian yang sudah dilengkapi ke hasil akhir
+                results.append(exam_data)
+            # --- Akhir Loop ---
+
+            # Logging sebelum return (tetap di dalam try)
+            app.logger.debug(f"Sending available exams with submission history (count: {len(results)}). First item snippet: {str(results[0])[:200] if results else 'None'}")
             return jsonify(results)
 
-        except Exception as e:
-            app.logger.exception(f"Error fetching available exams for student {student.id}: {e}")
+        except Exception as e: # <-- AKHIR BLOK TRY, AWAL BLOK EXCEPT
+            db.session.rollback() # Rollback jika ada error selama proses
+            app.logger.exception(f"Error fetching available exams with history for student {student.id}: {e}")
+            # Kembalikan pesan error dan status 500
             return jsonify({"message": "Error fetching available exams."}), 500
 
     @app.route('/api/student/exams/<int:exam_id>/take', methods=['GET'])
@@ -870,103 +903,362 @@ def create_app(config_class=Config):
     @app.route('/api/student/exams/<int:exam_id>/submit', methods=['POST'])
     @student_required
     def submit_exam_answers(exam_id):
+        """Handles the submission of exam answers by a student, calculates score, saves submission, and logs notification."""
         data = request.get_json()
         student = g.current_user
         user_id = student.id
+        username = student.username # Ambil username untuk log
 
-        # Validate input
+        app.logger.info(f"Submission received: Exam {exam_id}, User {user_id} ({username})")
+
+        # 1. Validasi Input Dasar
         if not data or 'answers' not in data or not isinstance(data['answers'], dict):
+            app.logger.warning(f"Invalid submission payload for Exam {exam_id}, User {user_id}: Missing or invalid 'answers'.")
             return jsonify({"message": "Missing or invalid 'answers' data (must be a dictionary)."}), 400
 
-        student_answers = data['answers'] # { "question_id_str": "selected_option_text", ... }
-        app.logger.info(f"Submission received: Exam {exam_id}, User {user_id}")
-        app.logger.debug(f"Received answers data keys: {list(student_answers.keys())}") # Avoid logging full answers unless necessary
+        student_answers = data['answers'] # Format: { "question_id_str": "selected_option_text", ... }
+        app.logger.debug(f"User {user_id} answers (keys only): {list(student_answers.keys())}")
 
         try:
-            # Fetch exam with questions (needed for grading)
-            # Use selectinload for questions for potentially better performance than joinedload here
+            # 2. Fetch Ujian dan Pertanyaan (Penting untuk Grading & Info Notifikasi)
+            # Eager load questions untuk efisiensi grading
             exam = db.session.get(Exam, exam_id, options=[selectinload(Exam.questions)])
             if not exam:
-                 app.logger.warning(f"Submission failed: Exam {exam_id} not found for user {user_id}.")
+                 app.logger.warning(f"Submission failed: Exam {exam_id} not found for User {user_id}.")
                  return jsonify({"message": "Exam not found."}), 404
-            # Optionally re-check published status and group assignment if needed for extra security
 
-            # Re-check attempts just before submitting
+            # 3. Cek Kelayakan Submit Ulang (Status Ujian & Attempts)
+            if exam.status != ExamStatusEnum.PUBLISHED:
+                 app.logger.warning(f"Submission rejected: Exam {exam_id} (User {user_id}) is not published (Status: {exam.status.value}).")
+                 return jsonify({"message": "This exam is not currently available for submission."}), 403
+
+            # Re-check jumlah attempt TEPAT SEBELUM menyimpan untuk mencegah race condition
             attempts_taken = ExamSubmission.query.filter_by(user_id=user_id, exam_id=exam_id).count()
             if attempts_taken >= exam.allowed_attempts:
-                app.logger.warning(f"Submission rejected (race condition?): User {user_id}, Exam {exam_id}: Max attempts ({exam.allowed_attempts}) reached.")
-                return jsonify({"message": f"Max attempts ({exam.allowed_attempts}) reached."}), 403
-            app.logger.info(f"Processing attempt {attempts_taken + 1}/{exam.allowed_attempts} for User {user_id}, Exam {exam_id}")
+                app.logger.warning(f"Submission rejected (Race Condition?): User {user_id}, Exam {exam_id}: Max attempts ({exam.allowed_attempts}) already reached ({attempts_taken} found).")
+                return jsonify({"message": f"Maximum number of attempts ({exam.allowed_attempts}) already reached."}), 403
 
-            # Calculate Score
-            # Use eager loaded questions
-            questions_list = exam.questions.all() # If lazy='dynamic' or convert selectinload result
+            app.logger.info(f"Processing attempt {attempts_taken + 1}/{exam.allowed_attempts} for User {user_id}, Exam {exam_id} ('{exam.name}')")
+
+            # 4. Kalkulasi Skor
+            questions_list = exam.questions.all() # Ambil semua pertanyaan dari relasi
             total_questions = len(questions_list) if questions_list else 0
             correct_answers_count = 0
             calculated_score = 0.0
 
             if total_questions > 0:
-                # Map correct answers: { question_id_str: correct_answer_text }
+                # Buat map jawaban benar {string(question_id): correct_answer_text}
                 question_map = {str(q.id): q.correct_answer for q in questions_list}
-                app.logger.debug(f"Correct answers map for Exam {exam_id}: {list(question_map.values())[:5]}...") # Log snippet
 
+                # Bandingkan jawaban siswa dengan jawaban benar
                 for q_id_str, correct_ans_text in question_map.items():
-                    student_ans_text = student_answers.get(q_id_str) # Get student answer string/null
-                    # Robust comparison (case-insensitive? probably not for exact answers)
-                    if student_ans_text is not None and correct_ans_text is not None and str(student_ans_text).strip() == str(correct_ans_text).strip():
+                    student_ans_text = student_answers.get(q_id_str) # Ambil jawaban siswa (bisa None)
+                    # Lakukan perbandingan yang aman (handle None, konversi ke string, trim whitespace)
+                    if student_ans_text is not None and correct_ans_text is not None and \
+                       str(student_ans_text).strip() == str(correct_ans_text).strip():
                         correct_answers_count += 1
-                    # Optional: Log incorrect answers for debugging
-                    # elif student_ans_text is not None:
-                    #      app.logger.debug(f"QID {q_id_str}: Incorrect. Student:'{student_ans_text}', Correct:'{correct_ans_text}'")
 
-                calculated_score = round((correct_answers_count / total_questions) * 100.0, 2) if total_questions > 0 else 0.0
-                app.logger.info(f"Calculated score for User {user_id}, Exam {exam_id}: {calculated_score}% ({correct_answers_count}/{total_questions})")
+                # Hitung skor persentase
+                calculated_score = round((correct_answers_count / total_questions) * 100.0, 2)
+                app.logger.info(f"Score calculated for User {user_id}, Exam {exam_id}: {calculated_score}% ({correct_answers_count}/{total_questions})")
             else:
-                 app.logger.warning(f"Exam {exam_id} has no questions associated. Score is 0.")
+                 app.logger.warning(f"Exam {exam_id} has no questions. Score set to 0.")
 
 
-            # Create and save the submission
-            # db.JSON column handles the `student_answers` dictionary
+            # 5. Buat dan Simpan Record Submission
             new_submission = ExamSubmission(
                 user_id=user_id,
                 exam_id=exam_id,
-                submitted_at=datetime.now(timezone.utc), # Ensure timezone
+                submitted_at=datetime.now(timezone.utc), # Gunakan waktu server UTC
                 score=calculated_score,
                 correct_answers_count=correct_answers_count,
-                total_questions_count=total_questions,
-                answers=student_answers # Pass the dictionary directly
+                total_questions_count=total_questions, # Simpan jumlah soal saat submit
+                answers=student_answers # Simpan jawaban siswa sebagai JSON
             )
             db.session.add(new_submission)
-            db.session.commit()
-            app.logger.info(f"Saved submission ID: {new_submission.id} for User {user_id}, Exam {exam_id}")
+            # --- Commit Submission Utama ---
+            try:
+                 db.session.commit()
+                 app.logger.info(f"Saved submission ID: {new_submission.id} for User {user_id}, Exam {exam_id}")
+            except Exception as commit_err:
+                 db.session.rollback() # Rollback jika commit gagal
+                 app.logger.exception(f"Database commit error during submission for User {user_id}, Exam {exam_id}: {commit_err}")
+                 return jsonify({"message": "Database error saving submission."}), 500
 
-            # Clear Proctoring State (if enabled)
+
+            # --- 6. Buat Log Notifikasi (SETELAH submission utama berhasil commit) ---
+            try:
+                # Ambil nama subjek dari objek exam yang sudah di-fetch
+                subject_name = exam.subject if exam and exam.subject else 'N/A'
+                # Buat pesan notifikasi yang deskriptif
+                log_message = f"'{username}' scored {calculated_score:.2f}% on exam '{exam.name}' ({subject_name})."
+
+                notification = NotificationLog(
+                    type=NotificationType.EXAM_SUBMITTED,
+                    message=log_message,        # Pesan untuk ditampilkan
+                    user_id=user_id,            # Siapa yang submit
+                    exam_id=exam_id,            # Ujian apa
+                    details={                   # Data JSON tambahan
+                        'score': calculated_score,
+                        'correctAnswers': correct_answers_count,
+                        'totalQuestions': total_questions,
+                        'submissionId': new_submission.id # Link ke submission jika perlu
+                    }
+                )
+                db.session.add(notification)
+                db.session.commit() # Commit notifikasi
+                app.logger.info(f"Created EXAM_SUBMITTED notification log (ID: {notification.id}) for submission {new_submission.id}")
+            except Exception as log_err:
+                # Jika GAGAL membuat log, JANGAN gagalkan seluruh proses submit
+                # Cukup log errornya saja
+                db.session.rollback() # Rollback HANYA jika commit notifikasi gagal
+                app.logger.error(f"Failed to create notification log for submission {new_submission.id}: {log_err}", exc_info=True)
+            # --- *** AKHIR LOGIKA NOTIFIKASI *** ---
+
+
+            # 7. Clear Proctoring State (jika ada)
             try:
                  proctoring.clear_proctoring_state(user_id)
                  app.logger.info(f"Cleared proctoring state for User {user_id}")
             except Exception as proc_e:
-                 # Log error but don't fail the submission response as DB commit succeeded
                  app.logger.error(f"Error clearing proctoring state for user {user_id} after submission: {proc_e}", exc_info=True)
 
 
-            # Return result to student
+            # 8. Kirim Respons Sukses ke Frontend
+            # Sertakan data yang mungkin berguna untuk halaman hasil
             return jsonify({
                 "message": "Exam submitted successfully.",
                 "submissionId": new_submission.id,
                 "correctAnswers": correct_answers_count,
                 "totalQuestions": total_questions,
                 "score": calculated_score
+                # Anda BISA tambahkan data lain di sini jika tidak mau pakai state navigation
+                # "examName": exam.name,
+                # "submittedAt": new_submission.submitted_at.isoformat()
             }), 200
 
-        except IntegrityError as ie: # Catch specific DB constraint errors if any
+        # --- Error Handling untuk Keseluruhan Proses ---
+        except IntegrityError as ie:
             db.session.rollback()
             app.logger.exception(f"Database integrity error during submission User {user_id}, Exam {exam_id}: {ie}")
-            return jsonify({"message": "Database error during submission. Please try again or contact support."}), 500
+            return jsonify({"message": "Database error during submission. Please try again."}), 500
         except Exception as e:
-            db.session.rollback()
-            app.logger.exception(f"Submission Error User {user_id}, Exam {exam_id}: {e}")
+            db.session.rollback() # Pastikan rollback jika ada error tak terduga
+            app.logger.exception(f"Unexpected Submission Error User {user_id}, Exam {exam_id}: {e}")
             return jsonify({"message": "An internal server error occurred during exam submission."}), 500
 
+
+    @app.route('/api/student/exams/<int:exam_id>/submissions', methods=['GET']) # <-- URL baru (plural)
+    @student_required
+    def get_exam_submissions_history(exam_id):
+        """Gets all submission history for a specific exam by the logged-in student, plus exam details."""
+        student_id = g.current_user.id
+        app.logger.info(f"Student {student_id}: Fetching submission history and exam details for exam {exam_id}")
+
+        # Ambil detail ujian (nama, allowed_attempts, dll)
+        exam = db.session.get(Exam, exam_id, options=[selectinload(Exam.questions)]) # Ambil questions untuk total
+        if not exam:
+            app.logger.warning(f"Student {student_id}: Exam not found when fetching history for ID {exam_id}.")
+            return jsonify({"message": "Exam not found"}), 404
+
+        try:
+            # Ambil SEMUA submission untuk user dan exam ini, urutkan dari yang pertama
+            submissions = ExamSubmission.query.filter_by(user_id=student_id, exam_id=exam_id)\
+                                                .order_by(ExamSubmission.submitted_at.asc())\
+                                                .all()
+
+            app.logger.info(f"Student {student_id}: Found {len(submissions)} submissions for exam {exam_id}.")
+
+            # Format data submission
+            submissions_data = []
+            for attempt_num, sub in enumerate(submissions):
+                submissions_data.append({
+                    'submissionId': sub.id,
+                    'attemptNumber': attempt_num + 1, # Tambahkan nomor attempt
+                    'correctAnswers': sub.correct_answers_count,
+                    'totalQuestions': sub.total_questions_count, # Pastikan ini ada
+                    'score': sub.score,
+                    'submittedAt': sub.submitted_at.isoformat() if sub.submitted_at else None,
+                    'status': "Finished" # Atau ambil dari DB jika ada field status per submission
+                })
+
+            # Siapkan data ujian
+            exam_details_data = {
+                "examId": exam.id,
+                "examName": exam.name,
+                "quizName": f"{exam.name} Results", # Sesuaikan jika perlu
+                "attemptsAllowed": exam.allowed_attempts,
+                # Hitung total pertanyaan dari relasi (lebih akurat daripada dari submission terakhir)
+                "totalQuestionsOverall": len(exam.questions.all()) if exam.questions else 0,
+                 # Kirim juga total attempt yang sudah diambil
+                "attemptsTaken": len(submissions)
+            }
+
+            # Gabungkan dan kirim
+            response_data = {
+                "examDetails": exam_details_data,
+                "submissions": submissions_data # Kirim array of submissions
+            }
+            return jsonify(response_data), 200
+
+        except Exception as e:
+            app.logger.exception(f"Error fetching submission history for student {student_id}, exam {exam_id}: {e}")
+            return jsonify({"message": "Error retrieving submission history."}), 500
+        
+    pass 
+        
+    @app.route('/api/student/exams/<int:exam_id>/submission/latest', methods=['GET'])
+    @student_required
+    def get_latest_submission_for_exam(exam_id):
+        """Gets the most recent submission details AND relevant exam details."""
+        student_id = g.current_user.id
+        app.logger.info(f"Student {student_id}: Fetching latest submission and exam details for exam {exam_id}")
+
+        # 1. Ambil Detail Ujian TERLEBIH DAHULU
+        # Eager load questions HANYA jika perlu hitung total di sini (lebih baik dari model exam)
+        exam = db.session.get(Exam, exam_id, options=[selectinload(Exam.questions)])
+        if not exam:
+            app.logger.warning(f"Student {student_id}: Exam not found when fetching latest submission for ID {exam_id}.")
+            return jsonify({"message": "Exam not found"}), 404
+
+        try:
+            # 2. Ambil Submission Terakhir (jika ada)
+            latest_submission = ExamSubmission.query.filter_by(user_id=student_id, exam_id=exam_id)\
+                                                .order_by(ExamSubmission.submitted_at.desc())\
+                                                .first() # Hanya yang paling baru
+
+            # 3. Hitung Jumlah Percobaan yang SUDAH DILAKUKAN (Total Submit)
+            # Ini penting untuk kalkulasi sisa attempt di frontend
+            # Lakukan query ini TERPISAH untuk mendapatkan jumlah terbaru
+            attempts_taken_count = ExamSubmission.query.filter_by(user_id=student_id, exam_id=exam_id).count()
+            app.logger.info(f"Total attempts counted for user {student_id}, exam {exam_id}: {attempts_taken_count}")
+
+            # 4. Siapkan data detail ujian
+            total_questions_overall = 0
+            try:
+                # Hitung total pertanyaan dari relasi Exam.questions
+                 total_questions_overall = exam.questions.count() # Hitung dari relasi dinamis
+                 app.logger.debug(f"Total questions counted from exam.questions relation: {total_questions_overall}")
+            except Exception as q_err:
+                 app.logger.warning(f"Could not count questions for exam {exam_id}: {q_err}")
+
+
+            exam_details_data = {
+                "examId": exam.id,
+                "examName": exam.name,
+                "quizName": f"{exam.name} Results", # Sesuaikan format nama jika perlu
+                "attemptsAllowed": exam.allowed_attempts, # Nilai total dari DB
+                "attemptsTaken": attempts_taken_count, # <-- SERTAKAN INI!
+                "totalQuestionsOverall": total_questions_overall # Total soal dari ujian
+                # Tambahkan subject, duration jika perlu ditampilkan di halaman hasil
+                # "subject": exam.subject,
+                # "duration": exam.duration
+            }
+
+            # 5. Siapkan data submission terakhir (jika ada)
+            submission_details_data = None
+            if latest_submission:
+                app.logger.info(f"Student {student_id}: Found latest submission ID {latest_submission.id} for exam {exam_id}.")
+                submission_details_data = {
+                    'submissionId': latest_submission.id,
+                    'correctAnswers': latest_submission.correct_answers_count,
+                    # Total questions saat submit (bisa berbeda jika soal diedit), ambil dari submission
+                    'totalQuestions': latest_submission.total_questions_count,
+                    'score': latest_submission.score,
+                    'submittedAt': latest_submission.submitted_at.isoformat() if latest_submission.submitted_at else None,
+                    'answers': latest_submission.answers, # Kirim jika perlu untuk fitur review
+                    'status': "Finished" # Asumsi status selesai
+                }
+            else:
+                 app.logger.info(f"Student {student_id}: No submissions found for exam {exam_id}.")
+                 # Jangan kirim 404 jika hanya submission yg tidak ada, kirim detail ujian saja
+
+            # 6. Gabungkan dan Kirim Respons
+            response_data = {
+                "examDetails": exam_details_data,
+                "submissionDetails": submission_details_data # Akan jadi null jika tidak ada submission
+            }
+
+            # Tentukan status code: 200 jika ada submission, tetap 200 (atau 200 dg pesan) jika hanya exam detail
+            status_code = 200
+            if not latest_submission:
+                response_data["message"] = "Exam details loaded, but no submission found for this exam yet."
+                # Anda bisa tetap return 200 atau return 404 jika mau (tapi frontend harus handle)
+                # return jsonify(response_data), 404
+
+            return jsonify(response_data), status_code
+
+        except Exception as e:
+            app.logger.exception(f"Error fetching latest submission/exam details for student {student_id}, exam {exam_id}: {e}")
+            return jsonify({"message": "Error retrieving results."}), 500
+        
+    @app.route('/api/student/exams/<int:exam_id>/cancel', methods=['POST'])
+    @student_required
+    def cancel_exam_session(exam_id):
+        student = g.current_user
+        data = request.get_json()
+        # Ambil alasan detail dari frontend, beri default jika tidak ada
+        reason = data.get('reason', 'Proctoring violation detected')
+
+        # Ambil detail ujian untuk dimasukkan ke pesan log
+        exam = db.session.get(Exam, exam_id)
+        if not exam:
+            app.logger.warning(f"Cancellation log failed: Exam {exam_id} not found for user {student.id}")
+            # Bisa return 404 atau log saja
+            return jsonify({"message": "Exam not found, cancellation not logged."}), 404 # Mungkin lebih baik
+
+        app.logger.warning(f"Received exam cancellation request for user {student.id}, exam {exam.id}. Reason: {reason}")
+
+        try:
+            # Buat pesan log notifikasi
+            subject_name = exam.subject if exam else 'Unknown Subject'
+            log_message = f"Exam '{exam.name}' ({subject_name}) for user '{student.username}' was cancelled. Reason: {reason}."
+
+            notification = NotificationLog(
+                type=NotificationType.EXAM_CANCELLED_PROCTORING,
+                message=log_message, # Simpan pesan ini
+                user_id=student.id,
+                exam_id=exam_id,
+                details={'reason': reason} # Simpan alasan detail
+            )
+            db.session.add(notification)
+            db.session.commit()
+            app.logger.info(f"Created EXAM_CANCELLED notification log for user {student.id}, exam {exam.id}")
+
+            # Tambahan: Mungkin Anda ingin menandai submission yang sedang berjalan (jika ada) sebagai 'CANCELLED'?
+            # Ini memerlukan logika tambahan untuk mencari submission aktif.
+
+            return jsonify({"message": "Exam session cancellation logged successfully."}), 200
+        except Exception as e:
+            db.session.rollback()
+            app.logger.exception(f"Error logging exam cancellation for user {student.id}, exam {exam.id}: {e}")
+            return jsonify({"message": "Failed to log exam cancellation."}), 500
+                
+
+    @app.route('/api/admin/dashboard/notifications', methods=['GET'])
+    @admin_required
+    def get_recent_notifications():
+        # Pastikan fungsi ini ada di bagian Admin Routes
+        """Gets recent notification logs for the admin dashboard."""
+        try:
+            limit = request.args.get('limit', 15, type=int) # Ambil 15 terbaru
+            notifications = NotificationLog.query.options(
+                                joinedload(NotificationLog.user), # Eager load user
+                                joinedload(NotificationLog.exam)  # Eager load exam
+                            )\
+                            .order_by(NotificationLog.timestamp.desc())\
+                            .limit(limit)\
+                            .all()
+
+            # Gunakan to_dict dari model NotificationLog (pastikan to_dict ada dan benar)
+            results = [n.to_dict() for n in notifications]
+            app.logger.info(f"Fetched {len(results)} recent notifications for admin.")
+            return jsonify(results), 200
+
+        except Exception as e:
+            app.logger.exception(f"Error fetching recent notifications: {e}")
+            return jsonify({"message": "Error fetching notifications."}), 500
+        
     @app.route('/api/student/dashboard', methods=['GET'])
     @student_required
     def get_student_dashboard_data():

@@ -75,6 +75,62 @@ class User(db.Model):
                 data['groups'] = [] # Gracefully handle error
         return data
 
+# Di models.py
+from datetime import datetime, timezone
+
+class NotificationType(enum.Enum):
+    EXAM_SUBMITTED = "exam_submitted"
+    EXAM_CANCELLED_PROCTORING = "exam_cancelled_proctoring"
+    # Tambahkan tipe lain jika perlu
+
+class NotificationLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    timestamp = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    type = db.Column(db.Enum(NotificationType), nullable=False)
+    message = db.Column(db.String, nullable=False) # Pesan notifikasi yg akan ditampilkan
+
+    # Relasi (opsional tapi berguna)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True) # User terkait (misal: siswa)
+    user = db.relationship('User', backref=db.backref('notifications', lazy=True))
+
+    exam_id = db.Column(db.Integer, db.ForeignKey('exam.id'), nullable=True) # Ujian terkait
+    exam = db.relationship('Exam', backref=db.backref('notifications', lazy=True))
+
+    # Data tambahan spesifik per tipe (bisa disimpan di message atau kolom terpisah)
+    # Misalnya, untuk EXAM_SUBMITTED: score
+    # Misalnya, untuk EXAM_CANCELLED: reason
+    details = db.Column(db.JSON, nullable=True) # Kolom JSON untuk data fleksibel
+
+    def __repr__(self):
+        return f'<NotificationLog {self.id} - {self.type.value} - {self.timestamp}>'
+
+    def to_dict(self):
+        # Sertakan username jika user ada
+        username = self.user.username if self.user else "Unknown User"
+        exam_name = self.exam.name if self.exam else "Unknown Exam" # Perlu relasi exam
+
+        # Format pesan yang lebih baik berdasarkan tipe
+        formatted_message = self.message # Default
+        if self.type == NotificationType.EXAM_SUBMITTED:
+             score = self.details.get('score', 'N/A') if self.details else 'N/A'
+             subject = self.exam.subject if self.exam else 'Unknown Subject' # Ambil subject dari exam
+             formatted_message = f"User '{username}' scored {score:.2f}% on exam '{exam_name}' ({subject})."
+        elif self.type == NotificationType.EXAM_CANCELLED_PROCTORING:
+             reason = self.details.get('reason', 'Unknown') if self.details else 'Unknown'
+             formatted_message = f"Exam '{exam_name}' for user '{username}' was cancelled due to proctoring violation: {reason}."
+
+        return {
+            'id': self.id,
+            'timestamp': self.timestamp.isoformat(),
+            'type': self.type.value,
+            'message': formatted_message, # Kirim pesan yang sudah diformat
+            'userId': self.user_id,
+            'username': username,
+            'examId': self.exam_id,
+            'examName': exam_name,
+            'details': self.details
+        }
+    
 class UserGroup(db.Model):
     __tablename__ = 'user_group' # Explicit table name
     id = db.Column(db.Integer, primary_key=True)

@@ -5,6 +5,7 @@ import enum
 import json # To handle JSON storage for options/answers
 from datetime import datetime, timezone # Use timezone-aware datetimes
 import logging # Use logging for warnings
+from sqlalchemy.orm import joinedload, selectinload, relationship
 
 # Get the logger instance
 log = logging.getLogger(__name__)
@@ -340,27 +341,34 @@ class Exam(db.Model):
     #     # Query total submissions for this exam
     #     return self.submissions.count() # Correct for lazy='dynamic'
 
+class SubmissionStatusEnum(enum.Enum):
+    COMPLETED = "Completed"
+    CANCELLED_PROCTORING = "Cancelled (Proctoring)"
+    # Add other statuses if needed later (e.g., IN_PROGRESS)
 
 class ExamSubmission(db.Model):
-    __tablename__ = 'exam_submission' # Explicit table name
+    __tablename__ = 'exam_submission'
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False) # Added ondelete
-    exam_id = db.Column(db.Integer, db.ForeignKey('exam.id', ondelete='CASCADE'), nullable=False) # Added ondelete
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, index=True) # Added index
+    exam_id = db.Column(db.Integer, db.ForeignKey('exam.id', ondelete='CASCADE'), nullable=False, index=True) # Added index
     submitted_at = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
-    score = db.Column(db.Float, nullable=True) # Score might be calculated later or might not apply
+    score = db.Column(db.Float, nullable=True)
     correct_answers_count = db.Column(db.Integer, nullable=True)
-    total_questions_count = db.Column(db.Integer, nullable=True) # Store total at time of submission
+    total_questions_count = db.Column(db.Integer, nullable=False) # Store total at time of submission/cancellation
 
-    # SQLAlchemy handles Python dict <-> JSON conversion for supported DBs (PostgreSQL, SQLite, MySQL)
     answers = db.Column(db.JSON, nullable=True)
 
-    # Relationships
-    student = db.relationship('User', back_populates='submissions', lazy='joined') # Use joined load for common access
-    exam = db.relationship('Exam', back_populates='submissions', lazy='joined') # Use joined load
+    status = db.Column(db.Enum(SubmissionStatusEnum), nullable=False,
+                       default=SubmissionStatusEnum.COMPLETED,
+                       server_default=SubmissionStatusEnum.COMPLETED.value)
+
+    # Relationships (using 'student' name consistently)
+    student = db.relationship('User', back_populates='submissions', lazy='joined')
+    exam = db.relationship('Exam', back_populates='submissions', lazy='joined')
 
 
     def __repr__(self):
-         # Safely represent object even if relationships are not loaded or None
+     # Safely represent object even if relationships are not loaded or None
         user_repr = f"User ID: {self.user_id}"
         exam_repr = f"Exam ID: {self.exam_id}"
         try:
@@ -376,34 +384,31 @@ class ExamSubmission(db.Model):
 
     def to_dict(self):
         """Serializes the ExamSubmission object to a dictionary."""
-        # Use try-except for accessing related object attributes in case they are None (e.g., deleted user/exam)
         student_username = None
         exam_name = None
         try:
-            # Check if the relation is loaded and not None
             if self.student:
                 student_username = self.student.username
         except Exception as e:
-             log.warning(f"Error accessing student username for Submission ID {self.id}: {e}")
+             log.warning(f"Error accessing student username for Submission ID {self.id}: {e}", exc_info=True) # Add exc_info
 
         try:
-            # Check if the relation is loaded and not None
             if self.exam:
                 exam_name = self.exam.name
         except Exception as e:
-            log.warning(f"Error accessing exam name for Submission ID {self.id}: {e}")
+            log.warning(f"Error accessing exam name for Submission ID {self.id}: {e}", exc_info=True) # Add exc_info
 
 
         return {
             'id': self.id,
-            'user_id': self.user_id,
-            'exam_id': self.exam_id,
-            'submitted_at': self.submitted_at.isoformat() if self.submitted_at else None,
+            'userId': self.user_id, # Keep camelCase consistent with other APIs? Or use user_id? Be consistent.
+            'examId': self.exam_id, # Keep camelCase consistent?
+            'submittedAt': self.submitted_at.isoformat() if self.submitted_at else None,
             'score': self.score,
-            'correct_answers_count': self.correct_answers_count,
-            'total_questions_count': self.total_questions_count,
-             # Access the db.JSON column directly. SQLAlchemy handles the load/dump.
+            'correctAnswers': self.correct_answers_count, # Keep camelCase consistent?
+            'totalQuestions': self.total_questions_count, # Keep camelCase consistent?
             'answers': self.answers,
-            'student_username': student_username,
-            'exam_name': exam_name,
+            'username': student_username, # Renamed from student_username for clarity?
+            'examName': exam_name, # Keep camelCase consistent?
+            'status': self.status.value if self.status else None,
         }

@@ -12,7 +12,7 @@ import logging # Import logging
 
 # Import models and config
 # Make sure UserGroup is imported
-from models import db, User, Exam, Question, RoleEnum, ExamStatusEnum, ExamSubmission, UserGroup, NotificationLog, NotificationType
+from models import db, User, Exam, Question, RoleEnum, ExamStatusEnum, ExamSubmission, UserGroup, NotificationLog, NotificationType, SubmissionStatusEnum
 from config import Config
 from dotenv import load_dotenv
 
@@ -900,153 +900,175 @@ def create_app(config_class=Config):
              app.logger.exception(f"Error fetching exam {exam_id} for student {student.id}: {e}")
              return jsonify({"message": "Error retrieving exam details."}), 500
 
+
     @app.route('/api/student/exams/<int:exam_id>/submit', methods=['POST'])
     @student_required
     def submit_exam_answers(exam_id):
-        """Handles the submission of exam answers by a student, calculates score, saves submission, and logs notification."""
+        """
+        Handles the submission of exam answers by a student.
+        Validates eligibility, calculates score, saves the submission record
+        with status 'COMPLETED', logs a notification, and clears proctoring state.
+        """
         data = request.get_json()
         student = g.current_user
         user_id = student.id
-        username = student.username # Ambil username untuk log
+        username = student.username
 
         app.logger.info(f"Submission received: Exam {exam_id}, User {user_id} ({username})")
 
-        # 1. Validasi Input Dasar
+        # 1. Basic Input Validation
         if not data or 'answers' not in data or not isinstance(data['answers'], dict):
-            app.logger.warning(f"Invalid submission payload for Exam {exam_id}, User {user_id}: Missing or invalid 'answers'.")
+            app.logger.warning(f"Invalid submission payload for Exam {exam_id}, User {user_id}: Missing or invalid 'answers' field.")
             return jsonify({"message": "Missing or invalid 'answers' data (must be a dictionary)."}), 400
 
-        student_answers = data['answers'] # Format: { "question_id_str": "selected_option_text", ... }
-        app.logger.debug(f"User {user_id} answers (keys only): {list(student_answers.keys())}")
+        student_answers = data['answers']
+        app.logger.debug(f"User {user_id} submitted answers for Exam {exam_id} (Keys: {list(student_answers.keys())})")
 
         try:
-            # 2. Fetch Ujian dan Pertanyaan (Penting untuk Grading & Info Notifikasi)
-            # Eager load questions untuk efisiensi grading
+            # 2. Fetch Exam and Questions (Eager Load)
+            # Use selectinload for the one-to-many questions relationship
+            # If selectinload works, exam.questions should be a list/iterable
             exam = db.session.get(Exam, exam_id, options=[selectinload(Exam.questions)])
+
             if not exam:
-                 app.logger.warning(f"Submission failed: Exam {exam_id} not found for User {user_id}.")
-                 return jsonify({"message": "Exam not found."}), 404
+                app.logger.warning(f"Submission failed: Exam {exam_id} not found for User {user_id}.")
+                return jsonify({"message": "Exam not found."}), 404
 
-            # 3. Cek Kelayakan Submit Ulang (Status Ujian & Attempts)
+            # 3. Check Exam Status (Must be Published)
             if exam.status != ExamStatusEnum.PUBLISHED:
-                 app.logger.warning(f"Submission rejected: Exam {exam_id} (User {user_id}) is not published (Status: {exam.status.value}).")
-                 return jsonify({"message": "This exam is not currently available for submission."}), 403
+                app.logger.warning(f"Submission rejected: Exam {exam_id} (User {user_id}) is not published (Status: {exam.status.value}).")
+                return jsonify({"message": "This exam is not currently available for submission."}), 403
 
-            # Re-check jumlah attempt TEPAT SEBELUM menyimpan untuk mencegah race condition
+            # 4. Check Attempts Left (Crucial Race Condition Check)
             attempts_taken = ExamSubmission.query.filter_by(user_id=user_id, exam_id=exam_id).count()
             if attempts_taken >= exam.allowed_attempts:
-                app.logger.warning(f"Submission rejected (Race Condition?): User {user_id}, Exam {exam_id}: Max attempts ({exam.allowed_attempts}) already reached ({attempts_taken} found).")
-                return jsonify({"message": f"Maximum number of attempts ({exam.allowed_attempts}) already reached."}), 403
+                app.logger.warning(f"Submission rejected (Race Condition?): User {user_id}, Exam {exam_id}. Max attempts ({exam.allowed_attempts}) already reached ({attempts_taken} found).")
+                return jsonify({"message": f"Maximum number of attempts ({exam.allowed_attempts}) already reached for this exam."}), 403
 
-            app.logger.info(f"Processing attempt {attempts_taken + 1}/{exam.allowed_attempts} for User {user_id}, Exam {exam_id} ('{exam.name}')")
+            app.logger.info(f"Processing attempt number {attempts_taken + 1} of {exam.allowed_attempts} for User {user_id}, Exam {exam.id} ('{exam.name}')")
 
-            # 4. Kalkulasi Skor
-            questions_list = exam.questions.all() # Ambil semua pertanyaan dari relasi
-            total_questions = len(questions_list) if questions_list else 0
+            # 5. Calculate Score
+            total_questions = 0
             correct_answers_count = 0
             calculated_score = 0.0
+            question_map = {}
 
+            # Safely access questions and calculate total
+            try:
+                # Check if exam.questions was populated by selectinload
+                if exam and hasattr(exam, 'questions') and exam.questions is not None:
+                    # Assuming exam.questions is now a list/iterable due to selectinload
+                    all_questions = list(exam.questions) # Convert to list just in case it's some other iterable
+                    total_questions = len(all_questions)
+                    if total_questions > 0:
+                        # Build the map only if there are questions
+                        question_map = {str(q.id): q.correct_answer for q in all_questions if hasattr(q, 'id') and hasattr(q, 'correct_answer')}
+                        # Check if map size matches total_questions (potential issue if questions lack id/correct_answer)
+                        if len(question_map) != total_questions:
+                            app.logger.warning(f"Mismatch between total questions ({total_questions}) and valid questions in map ({len(question_map)}) for Exam {exam_id}.")
+                    app.logger.debug(f"Successfully processed {total_questions} questions for grading Exam {exam_id}.")
+                else:
+                    app.logger.warning(f"Exam {exam_id} has no questions loaded or relationship is null. Total questions set to 0.")
+                    total_questions = 0 # Ensure it's 0 if no questions
+
+            except Exception as calc_err:
+                app.logger.exception(f"Error accessing/processing questions during score calculation for Exam {exam_id}, User {user_id}: {calc_err}")
+                # Fail the submission if question data can't be processed reliably
+                return jsonify({"message": "Internal error: Could not process exam questions for grading."}), 500
+
+            # Perform Grading if questions exist
             if total_questions > 0:
-                # Buat map jawaban benar {string(question_id): correct_answer_text}
-                question_map = {str(q.id): q.correct_answer for q in questions_list}
-
-                # Bandingkan jawaban siswa dengan jawaban benar
                 for q_id_str, correct_ans_text in question_map.items():
-                    student_ans_text = student_answers.get(q_id_str) # Ambil jawaban siswa (bisa None)
-                    # Lakukan perbandingan yang aman (handle None, konversi ke string, trim whitespace)
-                    if student_ans_text is not None and correct_ans_text is not None and \
-                       str(student_ans_text).strip() == str(correct_ans_text).strip():
-                        correct_answers_count += 1
+                    student_ans_text = student_answers.get(q_id_str)
+                    # Safe comparison
+                    if student_ans_text is not None and correct_ans_text is not None:
+                        if str(student_ans_text).strip() == str(correct_ans_text).strip():
+                            correct_answers_count += 1
 
-                # Hitung skor persentase
                 calculated_score = round((correct_answers_count / total_questions) * 100.0, 2)
                 app.logger.info(f"Score calculated for User {user_id}, Exam {exam_id}: {calculated_score}% ({correct_answers_count}/{total_questions})")
             else:
-                 app.logger.warning(f"Exam {exam_id} has no questions. Score set to 0.")
+                # Handle exam with zero questions
+                app.logger.info(f"Exam {exam_id} has 0 questions. Score set to 0.")
+                correct_answers_count = 0
+                calculated_score = 0.0
 
-
-            # 5. Buat dan Simpan Record Submission
+            # 6. Create the ExamSubmission Record
             new_submission = ExamSubmission(
                 user_id=user_id,
                 exam_id=exam_id,
-                submitted_at=datetime.now(timezone.utc), # Gunakan waktu server UTC
+                submitted_at=datetime.now(timezone.utc),
                 score=calculated_score,
                 correct_answers_count=correct_answers_count,
-                total_questions_count=total_questions, # Simpan jumlah soal saat submit
-                answers=student_answers # Simpan jawaban siswa sebagai JSON
+                total_questions_count=total_questions, # Use the reliably calculated total
+                answers=student_answers,
+                status=SubmissionStatusEnum.COMPLETED
             )
             db.session.add(new_submission)
-            # --- Commit Submission Utama ---
+
+            # --- Commit Main Submission ---
             try:
-                 db.session.commit()
-                 app.logger.info(f"Saved submission ID: {new_submission.id} for User {user_id}, Exam {exam_id}")
+                db.session.commit() # <<< Primary potential failure point
+                app.logger.info(f"Saved submission ID: {new_submission.id} for User {user_id}, Exam {exam_id} with status COMPLETED")
+            except IntegrityError as ie:
+                db.session.rollback()
+                # Log the detailed error from the database driver if available
+                error_detail = str(ie.orig) if hasattr(ie, 'orig') else str(ie)
+                app.logger.exception(f"Database integrity error saving submission for User {user_id}, Exam {exam_id}: {error_detail}")
+                # Return a more specific error if possible, otherwise the generic 500
+                return jsonify({"message": f"Database error saving submission. Please check constraints. Details: {error_detail}"}), 500 # Or 409 Conflict if appropriate
             except Exception as commit_err:
-                 db.session.rollback() # Rollback jika commit gagal
-                 app.logger.exception(f"Database commit error during submission for User {user_id}, Exam {exam_id}: {commit_err}")
-                 return jsonify({"message": "Database error saving submission."}), 500
+                db.session.rollback()
+                app.logger.exception(f"Unexpected database commit error during submission for User {user_id}, Exam {exam_id}: {commit_err}")
+                return jsonify({"message": "Database error occurred while saving submission."}), 500
 
-
-            # --- 6. Buat Log Notifikasi (SETELAH submission utama berhasil commit) ---
+            # --- 7. Log Notification (Post-Successful Submission Commit) ---
+            # (Existing notification logic is likely okay, runs after successful commit)
             try:
-                # Ambil nama subjek dari objek exam yang sudah di-fetch
                 subject_name = exam.subject if exam and exam.subject else 'N/A'
-                # Buat pesan notifikasi yang deskriptif
-                log_message = f"'{username}' scored {calculated_score:.2f}% on exam '{exam.name}' ({subject_name})."
-
+                log_message = f"'{username}' completed exam '{exam.name}' ({subject_name}) scoring {calculated_score:.2f}%."
                 notification = NotificationLog(
                     type=NotificationType.EXAM_SUBMITTED,
-                    message=log_message,        # Pesan untuk ditampilkan
-                    user_id=user_id,            # Siapa yang submit
-                    exam_id=exam_id,            # Ujian apa
-                    details={                   # Data JSON tambahan
-                        'score': calculated_score,
-                        'correctAnswers': correct_answers_count,
-                        'totalQuestions': total_questions,
-                        'submissionId': new_submission.id # Link ke submission jika perlu
+                    message=log_message, user_id=user_id, exam_id=exam_id,
+                    details={
+                        'score': calculated_score, 'correctAnswers': correct_answers_count,
+                        'totalQuestions': total_questions, 'submissionId': new_submission.id
                     }
                 )
                 db.session.add(notification)
-                db.session.commit() # Commit notifikasi
+                db.session.commit()
                 app.logger.info(f"Created EXAM_SUBMITTED notification log (ID: {notification.id}) for submission {new_submission.id}")
             except Exception as log_err:
-                # Jika GAGAL membuat log, JANGAN gagalkan seluruh proses submit
-                # Cukup log errornya saja
-                db.session.rollback() # Rollback HANYA jika commit notifikasi gagal
-                app.logger.error(f"Failed to create notification log for submission {new_submission.id}: {log_err}", exc_info=True)
-            # --- *** AKHIR LOGIKA NOTIFIKASI *** ---
+                db.session.rollback() # Rollback only the notification transaction
+                app.logger.error(f"Failed to create notification log for submission {new_submission.id} (User: {user_id}, Exam: {exam_id}): {log_err}", exc_info=True)
+                # !!! Do not return error here, submission was successful !!!
 
-
-            # 7. Clear Proctoring State (jika ada)
+            # --- 8. Clear Proctoring State (Best Effort) ---
+            # (Existing proctoring logic is likely okay)
             try:
-                 proctoring.clear_proctoring_state(user_id)
-                 app.logger.info(f"Cleared proctoring state for User {user_id}")
+                proctoring.clear_proctoring_state(user_id)
+                app.logger.info(f"Cleared proctoring state for User {user_id} after successful submission of Exam {exam_id}.")
             except Exception as proc_e:
-                 app.logger.error(f"Error clearing proctoring state for user {user_id} after submission: {proc_e}", exc_info=True)
+                app.logger.error(f"Error clearing proctoring state for user {user_id} after submission (Exam {exam_id}): {proc_e}", exc_info=True)
+                # !!! Do not return error here !!!
 
-
-            # 8. Kirim Respons Sukses ke Frontend
-            # Sertakan data yang mungkin berguna untuk halaman hasil
+            # --- 9. Send Success Response ---
             return jsonify({
                 "message": "Exam submitted successfully.",
                 "submissionId": new_submission.id,
                 "correctAnswers": correct_answers_count,
                 "totalQuestions": total_questions,
-                "score": calculated_score
-                # Anda BISA tambahkan data lain di sini jika tidak mau pakai state navigation
-                # "examName": exam.name,
-                # "submittedAt": new_submission.submitted_at.isoformat()
+                "score": calculated_score,
+                "status": new_submission.status.value
             }), 200
 
-        # --- Error Handling untuk Keseluruhan Proses ---
-        except IntegrityError as ie:
-            db.session.rollback()
-            app.logger.exception(f"Database integrity error during submission User {user_id}, Exam {exam_id}: {ie}")
-            return jsonify({"message": "Database error during submission. Please try again."}), 500
+        # --- Outer Exception Handling ---
         except Exception as e:
-            db.session.rollback() # Pastikan rollback jika ada error tak terduga
-            app.logger.exception(f"Unexpected Submission Error User {user_id}, Exam {exam_id}: {e}")
+            # Catch any other unexpected errors (e.g., during initial checks before DB ops)
+            db.session.rollback() # Rollback just in case
+            app.logger.exception(f"Unexpected Error during submission process for User {user_id}, Exam {exam_id}: {e}")
+            # Return the specific generic error message seen by the user
             return jsonify({"message": "An internal server error occurred during exam submission."}), 500
-
 
     @app.route('/api/student/exams/<int:exam_id>/submissions', methods=['GET']) # <-- URL baru (plural)
     @student_required
@@ -1195,45 +1217,92 @@ def create_app(config_class=Config):
     @app.route('/api/student/exams/<int:exam_id>/cancel', methods=['POST'])
     @student_required
     def cancel_exam_session(exam_id):
+        """Cancels an exam attempt due to proctoring violation, RECORDS it as a cancelled attempt, and logs notification."""
         student = g.current_user
         data = request.get_json()
-        # Ambil alasan detail dari frontend, beri default jika tidak ada
         reason = data.get('reason', 'Proctoring violation detected')
 
-        # Ambil detail ujian untuk dimasukkan ke pesan log
-        exam = db.session.get(Exam, exam_id)
+        # 1. Fetch Exam (needed for allowed_attempts and total_questions)
+        exam = db.session.get(Exam, exam_id, options=[selectinload(Exam.questions)]) # Load questions too
         if not exam:
-            app.logger.warning(f"Cancellation log failed: Exam {exam_id} not found for user {student.id}")
-            # Bisa return 404 atau log saja
-            return jsonify({"message": "Exam not found, cancellation not logged."}), 404 # Mungkin lebih baik
+            app.logger.warning(f"Cancellation failed: Exam {exam_id} not found for user {student.id}")
+            return jsonify({"message": "Exam not found, cancellation cannot be recorded."}), 404
 
-        app.logger.warning(f"Received exam cancellation request for user {student.id}, exam {exam.id}. Reason: {reason}")
+        # 2. Check if student CAN actually use an attempt slot BEFORE creating cancelled one
+        attempts_taken = ExamSubmission.query.filter_by(user_id=student.id, exam_id=exam_id).count()
+        if attempts_taken >= exam.allowed_attempts:
+            app.logger.warning(f"Cancellation ignored: User {student.id} already reached max attempts ({exam.allowed_attempts}) for exam {exam.id}. No cancellation submission created.")
+            # --- Log notification even if attempt isn't recorded ---
+            try:
+                subject_name = exam.subject if exam.subject else 'N/A'
+                log_message = f"Proctoring violation detected for '{student.username}' on exam '{exam.name}' ({subject_name}) after max attempts were already used. Reason: {reason}."
+                notification = NotificationLog(
+                    type=NotificationType.EXAM_CANCELLED_PROCTORING, message=log_message,
+                    user_id=student.id, exam_id=exam_id,
+                    details={'reason': reason, 'warning': 'Max attempts already used'}
+                )
+                db.session.add(notification)
+                db.session.commit()
+                app.logger.info(f"Logged EXAM_CANCELLED notification for user {student.id}, exam {exam.id} (max attempts reached).")
+            except Exception as log_err:
+                 db.session.rollback(); app.logger.error(f"Failed to create notification log for cancellation (max attempts reached) user {student.id}, exam {exam.id}: {log_err}", exc_info=True)
+            # --- Clear proctoring state ---
+            try: proctoring.clear_proctoring_state(student.id)
+            except Exception as proc_e: app.logger.error(f"Error clearing proctoring state after failed cancellation log (max attempts): {proc_e}")
+            # --- Inform user ---
+            return jsonify({"message": f"Proctoring violation noted, but maximum attempts ({exam.allowed_attempts}) were already recorded for this exam."}), 403
+
+        app.logger.warning(f"Processing exam cancellation for user {student.id}, exam {exam.id}. Reason: {reason}. Creating cancelled submission record.")
 
         try:
-            # Buat pesan log notifikasi
-            subject_name = exam.subject if exam else 'Unknown Subject'
-            log_message = f"Exam '{exam.name}' ({subject_name}) for user '{student.username}' was cancelled. Reason: {reason}."
+            # 3. Create Cancelled ExamSubmission Record
+            # Calculate total questions (Ensure model has total_questions_count as non-nullable)
+            total_questions = 0
+            if exam.questions:
+                try:
+                    # Efficiently count loaded questions if selectinload worked
+                    total_questions = len(exam.questions)
+                except: # Fallback if direct len() fails or questions not loaded
+                    total_questions = Question.query.filter_by(exam_id=exam.id).count()
 
-            notification = NotificationLog(
-                type=NotificationType.EXAM_CANCELLED_PROCTORING,
-                message=log_message, # Simpan pesan ini
-                user_id=student.id,
-                exam_id=exam_id,
-                details={'reason': reason} # Simpan alasan detail
+
+            cancelled_submission = ExamSubmission(
+                user_id=student.id, exam_id=exam_id,
+                submitted_at=datetime.now(timezone.utc),
+                score=None, correct_answers_count=None,
+                total_questions_count=total_questions, # Provide the count
+                answers={}, status=SubmissionStatusEnum.CANCELLED_PROCTORING # Set status
             )
-            db.session.add(notification)
+            db.session.add(cancelled_submission)
+            # *** COMMIT THE SUBMISSION ***
             db.session.commit()
-            app.logger.info(f"Created EXAM_CANCELLED notification log for user {student.id}, exam {exam.id}")
+            app.logger.info(f"Created CANCELLED submission record (ID: {cancelled_submission.id}) for user {student.id}, exam {exam.id}. Attempt count will increase.")
 
-            # Tambahan: Mungkin Anda ingin menandai submission yang sedang berjalan (jika ada) sebagai 'CANCELLED'?
-            # Ini memerlukan logika tambahan untuk mencari submission aktif.
+            # 4. Log Notification (AFTER successful submission commit)
+            try:
+                subject_name = exam.subject if exam.subject else 'N/A'
+                log_message = f"Exam '{exam.name}' ({subject_name}) attempt by '{student.username}' was CANCELLED due to proctoring violation and recorded as an attempt. Reason: {reason}."
+                notification = NotificationLog(
+                    type=NotificationType.EXAM_CANCELLED_PROCTORING, message=log_message,
+                    user_id=student.id, exam_id=exam_id,
+                    details={'reason': reason, 'submissionId': cancelled_submission.id}
+                )
+                db.session.add(notification)
+                db.session.commit()
+                app.logger.info(f"Created EXAM_CANCELLED notification log for user {student.id}, exam {exam.id} (linked to sub ID {cancelled_submission.id})")
+            except Exception as log_err:
+                 db.session.rollback(); app.logger.error(f"Failed to create notification log for cancellation user {student.id}, exam {exam_id} after creating submission: {log_err}", exc_info=True)
 
-            return jsonify({"message": "Exam session cancellation logged successfully."}), 200
+            # 5. Clear Proctoring State
+            try: proctoring.clear_proctoring_state(student.id); app.logger.info(f"Cleared proctoring state for user {student.id} after cancellation.")
+            except Exception as proc_e: app.logger.error(f"Error clearing proctoring state after cancellation for user {student.id}: {proc_e}", exc_info=True)
+
+            return jsonify({"message": "Exam attempt cancelled due to violation and recorded successfully."}), 200
+
         except Exception as e:
-            db.session.rollback()
-            app.logger.exception(f"Error logging exam cancellation for user {student.id}, exam {exam.id}: {e}")
-            return jsonify({"message": "Failed to log exam cancellation."}), 500
-                
+            db.session.rollback() # Rollback if submission creation or outer block fails
+            app.logger.exception(f"Error processing exam cancellation and recording submission for user {student.id}, exam {exam.id}: {e}")
+            return jsonify({"message": "Failed to record exam cancellation due to an internal error."}), 500                
 
     @app.route('/api/admin/dashboard/notifications', methods=['GET'])
     @admin_required

@@ -228,6 +228,7 @@ function ExamTakingInterface() {
                     if (!isExamCancelled) { // Prevent setting state if already cancelled for another reason
                         setCancellationReason('time');
                         setIsExamCancelled(true);
+                        
                         // Optional: Auto-submit on time up? Requires handling unanswered questions.
                         // For now, just cancels the session.
                         // handleConfirmSubmit(true); // Pass flag to bypass checks if auto-submitting
@@ -254,8 +255,8 @@ function ExamTakingInterface() {
                     console.warn(`Mouse left window boundary. Count: ${newCount}/${MAX_LEAVE_COUNT}`);
                     if (newCount >= MAX_LEAVE_COUNT) {
                         console.error("--- EXAM CANCELLED due to exceeding leave count! ---");
-                        setCancellationReason('leave');
-                        setIsExamCancelled(true);
+                        // Call the backend reporting function INSTEAD of setting state directly here
+                        reportCancellationToBackend('leave', `Cursor left the designated testing area ${MAX_LEAVE_COUNT} time(s).`);
                         if (leaveWarningTimeoutId.current) clearTimeout(leaveWarningTimeoutId.current);
                         setShowLeaveWarning(false);
                     } else {
@@ -288,9 +289,8 @@ function ExamTakingInterface() {
                     console.warn(`Tab switched away / minimized. Count: ${newCount}/${MAX_TAB_SWITCH_COUNT}`);
                     if (newCount >= MAX_TAB_SWITCH_COUNT) {
                         console.error("--- EXAM CANCELLED due to exceeding tab switch count! ---");
-                        setCancellationReason('tabswitch');
-                        setIsExamCancelled(true);
-                        if (tabSwitchWarningTimeoutId.current) clearTimeout(tabSwitchWarningTimeoutId.current);
+                        // Call the backend reporting function
+                        reportCancellationToBackend('tabswitch', `Tab switched or window minimized ${MAX_TAB_SWITCH_COUNT} time(s).`);                        if (tabSwitchWarningTimeoutId.current) clearTimeout(tabSwitchWarningTimeoutId.current);
                         setShowTabSwitchWarning(false);
                     } else {
                         setShowTabSwitchWarning(true);
@@ -361,8 +361,9 @@ function ExamTakingInterface() {
 
                     if (newCount >= MAX_CHEAT_WARNINGS) {
                         console.error("--- EXAM CANCELLED due to exceeding cheat warning count! ---");
-                        setCancellationReason('cheating');
-                        setIsExamCancelled(true);
+                        // Call the backend reporting function
+                        const finalReasonMsg = reason || 'Multiple proctoring warnings'; // Use the reason from the last detection if available
+                        reportCancellationToBackend('cheating', `Proctoring violation: ${finalReasonMsg}`);
                         setShowCheatingWarning(false); // Hide warning as exam is cancelled
                         if (cheatingWarningTimeoutId.current) clearTimeout(cheatingWarningTimeoutId.current);
                     }
@@ -548,6 +549,57 @@ function ExamTakingInterface() {
         // Note: setIsSubmitting(false) is only called in the catch block.
         // On success, we navigate away, so no need to reset it.
     };
+
+    const reportCancellationToBackend = useCallback(async (reasonCode, reasonMessage) => {
+        // Prevent multiple cancellation reports
+        if (isExamCancelled) {
+             console.warn("Attempted to report cancellation, but exam is already marked as cancelled locally.");
+             return;
+        }
+
+        console.log(`Reporting exam cancellation to backend. Reason Code: ${reasonCode}, Message: ${reasonMessage}`);
+
+        // Ensure examId is available (should be, as examDetails are loaded)
+        if (!examId) {
+            console.error("Cannot report cancellation: Exam ID is missing.");
+            return;
+        }
+
+        // Stop proctoring processes immediately when cancellation is triggered
+        if (frameAnalysisIntervalId.current) {
+             clearInterval(frameAnalysisIntervalId.current);
+             frameAnalysisIntervalId.current = null;
+             console.log("Cleared frame analysis interval due to cancellation trigger.");
+        }
+        stopCamera(); // Stop camera stream
+
+        // Set the local state AFTER initiating the backend call
+        // (avoids potential race condition if user quickly navigates away)
+        setCancellationReason(reasonCode);
+        setIsExamCancelled(true);
+
+
+        try {
+             // Assuming apiClient is configured to handle the auth token automatically
+             // Otherwise, you'd need to retrieve the token here
+             const response = await apiClient.post(`/student/exams/${examId}/cancel`, {
+                 reason: reasonMessage // Send the detailed reason
+             });
+
+             if (response.status === 200) {
+                 console.log('Exam cancellation successfully reported to backend and recorded.');
+             } else {
+                 // Backend might return errors like 403 if attempts were already maxed out
+                 console.warn('Backend responded to cancellation report with status:', response.status, response.data?.message);
+             }
+        } catch (error) {
+             // Log network errors or errors from the backend if the request fails
+             console.error('Error reporting exam cancellation to backend:', error.response?.data?.message || error.message);
+             // Even if reporting fails, keep the exam cancelled on the frontend
+        }
+
+    }, [examId, isExamCancelled, stopCamera]); // Add dependencies used inside the function
+
 
 
     // --- Render Logic ---

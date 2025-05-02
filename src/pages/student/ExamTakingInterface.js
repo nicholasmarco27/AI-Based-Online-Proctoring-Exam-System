@@ -361,9 +361,8 @@ function ExamTakingInterface() {
 
                     if (newCount >= MAX_CHEAT_WARNINGS) {
                         console.error("--- EXAM CANCELLED due to exceeding cheat warning count! ---");
-                        // Call the backend reporting function
-                        const finalReasonMsg = reason || 'Multiple proctoring warnings'; // Use the reason from the last detection if available
-                        reportCancellationToBackend('cheating', `Proctoring violation: ${finalReasonMsg}`);
+                        setCancellationReason('cheating');
+                        setIsExamCancelled(true);
                         setShowCheatingWarning(false); // Hide warning as exam is cancelled
                         if (cheatingWarningTimeoutId.current) clearTimeout(cheatingWarningTimeoutId.current);
                     }

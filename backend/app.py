@@ -7,6 +7,8 @@ import jwt
 from datetime import datetime, timezone, timedelta
 from werkzeug.security import check_password_hash
 import enum
+import numpy as np
+import mediapipe as mp # For face detection and mesh
 import io # Keep for CSV
 import logging # Import logging
 
@@ -1473,9 +1475,13 @@ def create_app(config_class=Config):
                         response_data = {
                              "cheating_detected": analysis_result.get("cheating_detected", False),
                              "reason": analysis_result.get("reason", None),
-                             "details": analysis_result.get("details", None) # Include any extra details
+                             "details": analysis_result.get("details", None), # Include any extra details
+                             "head_pose_score": analysis_result.get("head_pose_score", 0.0)
                          }
                         response_data = {k: v for k, v in response_data.items() if v is not None} # Clean None values
+
+                        if "head_pose_score" not in response_data and analysis_result.get("head_pose_score") is not None:
+                             response_data["head_pose_score"] = analysis_result.get("head_pose_score")
 
                         if response_data.get("cheating_detected"):
                              app.logger.info(f"Proctoring violation detected for user {user_id}: {response_data.get('reason', 'N/A')}")
@@ -1490,11 +1496,11 @@ def create_app(config_class=Config):
                      return jsonify({"message": "Internal error in proctoring analysis format."}), 500
             else:
                  app.logger.warning(f"Proctoring function not available for user {user_id}")
-                 return jsonify({"message": "Proctoring analysis not available", "cheating_detected": False}), 501 # Not Implemented
+                 return jsonify({"message": "Proctoring analysis not available", "cheating_detected": False, "head_pose_score": 0.0}), 501
 
         except Exception as e:
              app.logger.exception(f"Unexpected error in analyze_frame endpoint for user {user_id}: {e}")
-             return jsonify({"message": "Internal server error during frame analysis."}), 500
+             return jsonify({"message": "Internal server error during frame analysis.", "head_pose_score": 0.0}), 500
 
 
     # --- Database Initialization Command ---

@@ -3,19 +3,21 @@ name = "backend"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = "==3.11.6"
 dependencies = [
     "Flask",
     "Flask-SQLAlchemy",
     "Flask-Cors",
     "PyJWT",
-    "python-dotenv",
+    "python-dotenv>=0.19",
     "opencv-python-headless",
     "numpy",
     "Pillow",
     "Pandas",
     "Flask-SocketIO",
-    "eventlet",
+    "eventlet",  # Or use 'gevent' if preferred
     "mediapipe==0.10.14",
-    "Werkzeug"
+    "Werkzeug",
+    "PyMySQL",
+    "google-cloud-sql-connector[pymysql]"
 ]

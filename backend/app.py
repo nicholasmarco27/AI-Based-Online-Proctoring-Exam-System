@@ -8,15 +8,23 @@ from datetime import datetime, timezone, timedelta
 from werkzeug.security import check_password_hash
 import enum
 import numpy as np
-import mediapipe as mp # For face detection and mesh
+# import mediapipe as mp # Commented out if not strictly needed currently
 import io # Keep for CSV
 import logging # Import logging
 
+# --- Cloud SQL Connector Imports ---
+import sqlalchemy
+from google.cloud.sql.connector import Connector, IPTypes
+
 # Import models and config
 # Make sure UserGroup is imported
-from models import db, User, Exam, Question, RoleEnum, ExamStatusEnum, ExamSubmission, UserGroup, NotificationLog, NotificationType, SubmissionStatusEnum
+from models import (
+    db, User, Exam, Question, RoleEnum, ExamStatusEnum, ExamSubmission,
+    UserGroup, NotificationLog, NotificationType, SubmissionStatusEnum
+)
 from config import Config
-from dotenv import load_dotenv
+# Dotenv loading is usually handled within Config class now if using python-dotenv >= 0.19
+# from dotenv import load_dotenv
 
 # Import utilities from SQLAlchemy
 from sqlalchemy.orm import joinedload, selectinload # selectinload can be efficient for one-to-many
@@ -46,8 +54,40 @@ except ImportError:
     logging.warning("Pandas library not found. CSV import feature will be disabled.")
 
 
-load_dotenv()
+# load_dotenv() # Moved to config.py logic likely
 
+# --- Helper Function for Cloud SQL Connection ---
+# Global connector instance to manage connection pooling efficiently
+connector = None
+
+def getconn() -> sqlalchemy.engine.base.Connection:
+    """
+    Creates a secure database connection pool for Cloud SQL using the connector.
+    This function is used by SQLAlchemy as the 'creator' for its engine.
+    """
+    global connector
+    # Initialize Connector object if it doesn't exist
+    if connector is None:
+        logging.info("Initializing Cloud SQL Connector...")
+        connector = Connector()
+
+    # Establish connection using credentials and instance name from Config
+    # Make sure Config class has loaded these from environment variables
+    try:
+        conn = connector.connect(
+            Config.INSTANCE_CONNECTION_NAME, # Defined in config.py, read from env
+            "pymysql",                       # The DBAPI driver name
+            user=Config.DB_USER,
+            password=Config.DB_PASS,
+            db=Config.DB_NAME,
+            ip_type=IPTypes.PUBLIC           # Use IPTypes.PRIVATE if your app runs in the same VPC
+                                             # and you've configured private IP for the instance
+                                             # Ensure VPC Network Peering is set up for Private IP.
+        )
+        return conn
+    except Exception as e:
+        logging.exception(f"Failed to connect to Cloud SQL instance '{Config.INSTANCE_CONNECTION_NAME}' as user '{Config.DB_USER}': {e}")
+        raise # Re-raise the exception so the app knows connection failed
 
 # Factory function to create the Flask application
 def create_app(config_class=Config):
@@ -56,14 +96,36 @@ def create_app(config_class=Config):
 
     # --- Configure Logging ---
     # Use Flask's built-in logger setup
-    # Level set via basicConfig or app.logger.setLevel
     log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
     logging.basicConfig(level=log_level,
                         format='%(asctime)s %(levelname)s %(name)s %(threadName)s : %(message)s')
     app.logger.info(f"Flask App starting with log level {log_level}")
     # --------------------------
 
-    # Create instance folder if it doesn't exist
+    # --- Configure SQLAlchemy to use Cloud SQL Connector ---
+    # Check if necessary Cloud SQL config variables are present from Config class
+    if not all([app.config.get('DB_USER'), app.config.get('DB_PASS'), app.config.get('DB_NAME'), app.config.get('INSTANCE_CONNECTION_NAME')]):
+        raise ValueError("Missing Cloud SQL database configuration in environment variables/Config (DB_USER, DB_PASS, DB_NAME, INSTANCE_CONNECTION_NAME)")
+
+    app.logger.info(f"Configuring SQLAlchemy for Cloud SQL instance: {app.config['INSTANCE_CONNECTION_NAME']}")
+
+    # Configure the SQLAlchemy engine options BEFORE db.init_app()
+    # Use the 'creator' argument to specify the function that creates DB connections (getconn)
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+        "creator": getconn,       # Use the connector function
+        "pool_size": 5,           # Standard pool size
+        "max_overflow": 2,        # Connections allowed beyond pool_size
+        "pool_timeout": 30,       # seconds before timeout waiting for connection
+        "pool_recycle": 1800,     # seconds (recycle connections older than 30 min) to prevent stale connections
+    }
+
+    # Set a dummy URI just to satisfy Flask-SQLAlchemy's requirement for it to be set.
+    # The actual connection is handled entirely by the 'creator' in engine options.
+    app.config['SQLALCHEMY_DATABASE_URI'] = "mysql+pymysql://"
+
+    # --- End SQLAlchemy Configuration ---
+
+    # Create instance folder if it doesn't exist (still potentially useful for other files)
     try:
         if not os.path.exists(app.instance_path):
              app.logger.info(f"Creating instance folder at {app.instance_path}")
@@ -72,7 +134,10 @@ def create_app(config_class=Config):
         app.logger.error(f"Error creating instance path {app.instance_path}: {e}", exc_info=True)
         # Consider exiting if instance path is critical and cannot be created
 
+    # Initialize SQLAlchemy AFTER setting engine options
     db.init_app(app)
+
+    # Initialize CORS
     CORS(app, resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000"], # Allow both localhost and 127.0.0.1 for dev
                                 "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
                                 "allow_headers": ["Content-Type", "Authorization"],
@@ -142,6 +207,8 @@ def create_app(config_class=Config):
 
 
     # --- API Routes ---
+    # Note: ALL original API routes remain unchanged below this point.
+    # They will now use the SQLAlchemy session connected to Cloud SQL via the connector.
 
     # Authentication Routes
     @app.route('/api/login', methods=['POST'])
@@ -429,7 +496,7 @@ def create_app(config_class=Config):
             # Use session.get with joinedload options
             # selectinload might be better for one-to-many (questions) if needed later
             exam = db.session.get(Exam, exam_id, options=[
-            # db.joinedload(Exam.questions),
+            # db.joinedload(Exam.questions), # This is dynamic, use selectinload or handle in to_dict
             joinedload(Exam.assigned_groups)
             ])
 
@@ -513,14 +580,10 @@ def create_app(config_class=Config):
                  exam.assigned_groups.extend(groups_to_add)
 
             # Update Questions (Delete existing and Re-add new strategy)
-            # This is simple but might be inefficient for large numbers of questions.
-            # Consider an update-in-place strategy if performance becomes an issue.
             app.logger.info(f"Deleting existing questions for exam {exam_id} before update.")
-            # Use the relationship with cascade delete-orphan if configured, or explicit delete
-            # Since cascade is set on model, this should work:
-            exam.questions.delete() # Deletes questions linked via the dynamic relationship
-            # If cascade didn't work reliably, use:
-            # Question.query.filter_by(exam_id=exam_id).delete()
+            # Use the relationship with cascade delete-orphan if configured
+            # Since exam.questions is dynamic, call delete() on the query object
+            exam.questions.delete()
             db.session.flush() # Ensure deletes happen before adds
 
             app.logger.info(f"Adding updated questions for exam {exam_id}.")
@@ -607,9 +670,7 @@ def create_app(config_class=Config):
             app.logger.exception(f"Error fetching results for exam {exam_id}: {e}")
             return jsonify({"message": "An internal server error occurred while fetching results."}), 500
 
-    # User Group Management (Code largely unchanged from previous versions, assuming it worked)
-    # Add logging and minor validation improvements if needed
-
+    # User Group Management
     @app.route('/api/admin/usergroups', methods=['POST'])
     @admin_required
     def create_user_group():
@@ -781,7 +842,7 @@ def create_app(config_class=Config):
         """Gets exams available to the current student including previous submission summaries."""
         student = g.current_user
         app.logger.info(f"Student {student.id}: Fetching available exams with history.")
-        try: # <-- AWAL BLOK TRY
+        try:
             # Get IDs of groups the student belongs to
             student_group_ids = {group.id for group in student.groups}
             app.logger.debug(f"Student {student.id} belongs to group IDs: {student_group_ids}")
@@ -797,32 +858,22 @@ def create_app(config_class=Config):
             available_exams = query.order_by(Exam.created_at.desc()).all()
             app.logger.info(f"Found {len(available_exams)} available exams for student {student.id}.")
 
-            results = [] # Pindahkan inisialisasi results ke dalam try
+            results = []
 
-            # --- Loop HARUS di dalam try ---
             for exam in available_exams:
-                # Konversi exam dasar ke dictionary
                 exam_data = exam.to_dict(include_questions=False, include_groups=False)
-
-                # Hitung total attempts
-                # Pastikan query ini tidak error jika exam.id null (seharusnya tidak mungkin di sini)
                 attempts_taken_count = ExamSubmission.query.filter_by(user_id=student.id, exam_id=exam.id).count()
                 exam_data['attempts_taken'] = attempts_taken_count
-                # Perbandingan attempts (pastikan allowed_attempts ada di exam_data atau exam object)
-                # Ambil allowed_attempts dari exam object langsung untuk keamanan
                 exam_data['can_attempt'] = attempts_taken_count < exam.allowed_attempts
 
-                # Ambil Detail Submission Sebelumnya
                 previous_submissions_query = ExamSubmission.query.filter_by(user_id=student.id, exam_id=exam.id)\
                                                             .order_by(ExamSubmission.submitted_at.asc())\
                                                             .all()
 
-                # Format data submission sebelumnya
-                exam_data['previous_submissions'] = [] # Inisialisasi list kosong
-                if attempts_taken_count > 0 and previous_submissions_query: # Cek jika ada attempt dan query mengembalikan hasil
+                exam_data['previous_submissions'] = []
+                if attempts_taken_count > 0 and previous_submissions_query:
                     app.logger.debug(f"Processing {len(previous_submissions_query)} submissions for exam {exam.id}, student {student.id}")
                     for sub in previous_submissions_query:
-                        # Buat dictionary untuk setiap submission
                         submission_summary = {
                             'submissionId': sub.id,
                             'submittedAt': sub.submitted_at.isoformat() if sub.submitted_at else None,
@@ -831,21 +882,15 @@ def create_app(config_class=Config):
                             'totalQuestions': sub.total_questions_count
                         }
                         exam_data['previous_submissions'].append(submission_summary)
-                # else: # Tidak perlu log jika memang tidak ada submission
-                    # app.logger.debug(f"No previous submissions found for exam {exam.id}, student {student.id}")
 
-                # Tambahkan data ujian yang sudah dilengkapi ke hasil akhir
                 results.append(exam_data)
-            # --- Akhir Loop ---
 
-            # Logging sebelum return (tetap di dalam try)
             app.logger.debug(f"Sending available exams with submission history (count: {len(results)}). First item snippet: {str(results[0])[:200] if results else 'None'}")
             return jsonify(results)
 
-        except Exception as e: # <-- AKHIR BLOK TRY, AWAL BLOK EXCEPT
-            db.session.rollback() # Rollback jika ada error selama proses
+        except Exception as e:
+            db.session.rollback()
             app.logger.exception(f"Error fetching available exams with history for student {student.id}: {e}")
-            # Kembalikan pesan error dan status 500
             return jsonify({"message": "Error fetching available exams."}), 500
 
     @app.route('/api/student/exams/<int:exam_id>/take', methods=['GET'])
@@ -859,7 +904,7 @@ def create_app(config_class=Config):
             # Eager load questions and assigned groups
             exam = db.session.get(Exam, exam_id, options=[
                 selectinload(Exam.questions), # selectinload for one-to-many
-                joinedload(Exam.assigned_groups) # subquery for many-to-many
+                joinedload(Exam.assigned_groups) # joinedload for many-to-many
             ])
 
             if not exam: return jsonify({"message": "Exam not found."}), 404
@@ -928,8 +973,6 @@ def create_app(config_class=Config):
 
         try:
             # 2. Fetch Exam and Questions (Eager Load)
-            # Use selectinload for the one-to-many questions relationship
-            # If selectinload works, exam.questions should be a list/iterable
             exam = db.session.get(Exam, exam_id, options=[selectinload(Exam.questions)])
 
             if not exam:
@@ -955,17 +998,13 @@ def create_app(config_class=Config):
             calculated_score = 0.0
             question_map = {}
 
-            # Safely access questions and calculate total
             try:
-                # Check if exam.questions was populated by selectinload
                 if exam and hasattr(exam, 'questions') and exam.questions is not None:
-                    # Assuming exam.questions is now a list/iterable due to selectinload
-                    all_questions = list(exam.questions) # Convert to list just in case it's some other iterable
+                    # Access questions via the relationship; selectinload should make this efficient
+                    all_questions = list(exam.questions) # Convert dynamic relationship to list
                     total_questions = len(all_questions)
                     if total_questions > 0:
-                        # Build the map only if there are questions
                         question_map = {str(q.id): q.correct_answer for q in all_questions if hasattr(q, 'id') and hasattr(q, 'correct_answer')}
-                        # Check if map size matches total_questions (potential issue if questions lack id/correct_answer)
                         if len(question_map) != total_questions:
                             app.logger.warning(f"Mismatch between total questions ({total_questions}) and valid questions in map ({len(question_map)}) for Exam {exam_id}.")
                     app.logger.debug(f"Successfully processed {total_questions} questions for grading Exam {exam_id}.")
@@ -975,14 +1014,12 @@ def create_app(config_class=Config):
 
             except Exception as calc_err:
                 app.logger.exception(f"Error accessing/processing questions during score calculation for Exam {exam_id}, User {user_id}: {calc_err}")
-                # Fail the submission if question data can't be processed reliably
                 return jsonify({"message": "Internal error: Could not process exam questions for grading."}), 500
 
             # Perform Grading if questions exist
             if total_questions > 0:
                 for q_id_str, correct_ans_text in question_map.items():
                     student_ans_text = student_answers.get(q_id_str)
-                    # Safe comparison
                     if student_ans_text is not None and correct_ans_text is not None:
                         if str(student_ans_text).strip() == str(correct_ans_text).strip():
                             correct_answers_count += 1
@@ -990,7 +1027,6 @@ def create_app(config_class=Config):
                 calculated_score = round((correct_answers_count / total_questions) * 100.0, 2)
                 app.logger.info(f"Score calculated for User {user_id}, Exam {exam_id}: {calculated_score}% ({correct_answers_count}/{total_questions})")
             else:
-                # Handle exam with zero questions
                 app.logger.info(f"Exam {exam_id} has 0 questions. Score set to 0.")
                 correct_answers_count = 0
                 calculated_score = 0.0
@@ -1010,22 +1046,19 @@ def create_app(config_class=Config):
 
             # --- Commit Main Submission ---
             try:
-                db.session.commit() # <<< Primary potential failure point
+                db.session.commit()
                 app.logger.info(f"Saved submission ID: {new_submission.id} for User {user_id}, Exam {exam_id} with status COMPLETED")
             except IntegrityError as ie:
                 db.session.rollback()
-                # Log the detailed error from the database driver if available
                 error_detail = str(ie.orig) if hasattr(ie, 'orig') else str(ie)
                 app.logger.exception(f"Database integrity error saving submission for User {user_id}, Exam {exam_id}: {error_detail}")
-                # Return a more specific error if possible, otherwise the generic 500
-                return jsonify({"message": f"Database error saving submission. Please check constraints. Details: {error_detail}"}), 500 # Or 409 Conflict if appropriate
+                return jsonify({"message": f"Database error saving submission. Please check constraints. Details: {error_detail}"}), 500 # Or 409 Conflict
             except Exception as commit_err:
                 db.session.rollback()
                 app.logger.exception(f"Unexpected database commit error during submission for User {user_id}, Exam {exam_id}: {commit_err}")
                 return jsonify({"message": "Database error occurred while saving submission."}), 500
 
             # --- 7. Log Notification (Post-Successful Submission Commit) ---
-            # (Existing notification logic is likely okay, runs after successful commit)
             try:
                 subject_name = exam.subject if exam and exam.subject else 'N/A'
                 log_message = f"'{username}' completed exam '{exam.name}' ({subject_name}) scoring {calculated_score:.2f}%."
@@ -1041,18 +1074,15 @@ def create_app(config_class=Config):
                 db.session.commit()
                 app.logger.info(f"Created EXAM_SUBMITTED notification log (ID: {notification.id}) for submission {new_submission.id}")
             except Exception as log_err:
-                db.session.rollback() # Rollback only the notification transaction
+                db.session.rollback()
                 app.logger.error(f"Failed to create notification log for submission {new_submission.id} (User: {user_id}, Exam: {exam_id}): {log_err}", exc_info=True)
-                # !!! Do not return error here, submission was successful !!!
 
             # --- 8. Clear Proctoring State (Best Effort) ---
-            # (Existing proctoring logic is likely okay)
             try:
                 proctoring.clear_proctoring_state(user_id)
                 app.logger.info(f"Cleared proctoring state for User {user_id} after successful submission of Exam {exam_id}.")
             except Exception as proc_e:
                 app.logger.error(f"Error clearing proctoring state for user {user_id} after submission (Exam {exam_id}): {proc_e}", exc_info=True)
-                # !!! Do not return error here !!!
 
             # --- 9. Send Success Response ---
             return jsonify({
@@ -1066,10 +1096,8 @@ def create_app(config_class=Config):
 
         # --- Outer Exception Handling ---
         except Exception as e:
-            # Catch any other unexpected errors (e.g., during initial checks before DB ops)
-            db.session.rollback() # Rollback just in case
+            db.session.rollback()
             app.logger.exception(f"Unexpected Error during submission process for User {user_id}, Exam {exam_id}: {e}")
-            # Return the specific generic error message seen by the user
             return jsonify({"message": "An internal server error occurred during exam submission."}), 500
 
     @app.route('/api/student/exams/<int:exam_id>/submissions', methods=['GET']) # <-- URL baru (plural)
@@ -1103,18 +1131,22 @@ def create_app(config_class=Config):
                     'totalQuestions': sub.total_questions_count, # Pastikan ini ada
                     'score': sub.score,
                     'submittedAt': sub.submitted_at.isoformat() if sub.submitted_at else None,
-                    'status': "Finished" # Atau ambil dari DB jika ada field status per submission
+                    'status': sub.status.value if sub.status else SubmissionStatusEnum.COMPLETED.value # Use actual status
                 })
 
             # Siapkan data ujian
+            total_questions_overall = 0
+            try:
+                 total_questions_overall = exam.questions.count() # Hitung dari relasi dinamis
+            except Exception as q_err:
+                 app.logger.warning(f"Could not count questions for exam {exam_id}: {q_err}")
+
             exam_details_data = {
                 "examId": exam.id,
                 "examName": exam.name,
                 "quizName": f"{exam.name} Results", # Sesuaikan jika perlu
                 "attemptsAllowed": exam.allowed_attempts,
-                # Hitung total pertanyaan dari relasi (lebih akurat daripada dari submission terakhir)
-                "totalQuestionsOverall": len(exam.questions.all()) if exam.questions else 0,
-                 # Kirim juga total attempt yang sudah diambil
+                "totalQuestionsOverall": total_questions_overall,
                 "attemptsTaken": len(submissions)
             }
 
@@ -1128,9 +1160,8 @@ def create_app(config_class=Config):
         except Exception as e:
             app.logger.exception(f"Error fetching submission history for student {student_id}, exam {exam_id}: {e}")
             return jsonify({"message": "Error retrieving submission history."}), 500
-        
-    pass 
-        
+
+    # This route might be redundant if the above route returns all history. Keep if needed.
     @app.route('/api/student/exams/<int:exam_id>/submission/latest', methods=['GET'])
     @student_required
     def get_latest_submission_for_exam(exam_id):
@@ -1138,84 +1169,65 @@ def create_app(config_class=Config):
         student_id = g.current_user.id
         app.logger.info(f"Student {student_id}: Fetching latest submission and exam details for exam {exam_id}")
 
-        # 1. Ambil Detail Ujian TERLEBIH DAHULU
-        # Eager load questions HANYA jika perlu hitung total di sini (lebih baik dari model exam)
         exam = db.session.get(Exam, exam_id, options=[selectinload(Exam.questions)])
         if not exam:
             app.logger.warning(f"Student {student_id}: Exam not found when fetching latest submission for ID {exam_id}.")
             return jsonify({"message": "Exam not found"}), 404
 
         try:
-            # 2. Ambil Submission Terakhir (jika ada)
             latest_submission = ExamSubmission.query.filter_by(user_id=student_id, exam_id=exam_id)\
                                                 .order_by(ExamSubmission.submitted_at.desc())\
                                                 .first() # Hanya yang paling baru
 
-            # 3. Hitung Jumlah Percobaan yang SUDAH DILAKUKAN (Total Submit)
-            # Ini penting untuk kalkulasi sisa attempt di frontend
-            # Lakukan query ini TERPISAH untuk mendapatkan jumlah terbaru
             attempts_taken_count = ExamSubmission.query.filter_by(user_id=student_id, exam_id=exam_id).count()
             app.logger.info(f"Total attempts counted for user {student_id}, exam {exam_id}: {attempts_taken_count}")
 
-            # 4. Siapkan data detail ujian
             total_questions_overall = 0
             try:
-                # Hitung total pertanyaan dari relasi Exam.questions
-                 total_questions_overall = exam.questions.count() # Hitung dari relasi dinamis
+                 total_questions_overall = exam.questions.count()
                  app.logger.debug(f"Total questions counted from exam.questions relation: {total_questions_overall}")
             except Exception as q_err:
                  app.logger.warning(f"Could not count questions for exam {exam_id}: {q_err}")
 
-
             exam_details_data = {
                 "examId": exam.id,
                 "examName": exam.name,
-                "quizName": f"{exam.name} Results", # Sesuaikan format nama jika perlu
-                "attemptsAllowed": exam.allowed_attempts, # Nilai total dari DB
-                "attemptsTaken": attempts_taken_count, # <-- SERTAKAN INI!
-                "totalQuestionsOverall": total_questions_overall # Total soal dari ujian
-                # Tambahkan subject, duration jika perlu ditampilkan di halaman hasil
-                # "subject": exam.subject,
-                # "duration": exam.duration
+                "quizName": f"{exam.name} Results",
+                "attemptsAllowed": exam.allowed_attempts,
+                "attemptsTaken": attempts_taken_count,
+                "totalQuestionsOverall": total_questions_overall
             }
 
-            # 5. Siapkan data submission terakhir (jika ada)
             submission_details_data = None
             if latest_submission:
                 app.logger.info(f"Student {student_id}: Found latest submission ID {latest_submission.id} for exam {exam_id}.")
                 submission_details_data = {
                     'submissionId': latest_submission.id,
                     'correctAnswers': latest_submission.correct_answers_count,
-                    # Total questions saat submit (bisa berbeda jika soal diedit), ambil dari submission
                     'totalQuestions': latest_submission.total_questions_count,
                     'score': latest_submission.score,
                     'submittedAt': latest_submission.submitted_at.isoformat() if latest_submission.submitted_at else None,
-                    'answers': latest_submission.answers, # Kirim jika perlu untuk fitur review
-                    'status': "Finished" # Asumsi status selesai
+                    'answers': latest_submission.answers,
+                    'status': latest_submission.status.value if latest_submission.status else SubmissionStatusEnum.COMPLETED.value
                 }
             else:
                  app.logger.info(f"Student {student_id}: No submissions found for exam {exam_id}.")
-                 # Jangan kirim 404 jika hanya submission yg tidak ada, kirim detail ujian saja
 
-            # 6. Gabungkan dan Kirim Respons
             response_data = {
                 "examDetails": exam_details_data,
-                "submissionDetails": submission_details_data # Akan jadi null jika tidak ada submission
+                "submissionDetails": submission_details_data
             }
 
-            # Tentukan status code: 200 jika ada submission, tetap 200 (atau 200 dg pesan) jika hanya exam detail
             status_code = 200
             if not latest_submission:
                 response_data["message"] = "Exam details loaded, but no submission found for this exam yet."
-                # Anda bisa tetap return 200 atau return 404 jika mau (tapi frontend harus handle)
-                # return jsonify(response_data), 404
 
             return jsonify(response_data), status_code
 
         except Exception as e:
             app.logger.exception(f"Error fetching latest submission/exam details for student {student_id}, exam {exam_id}: {e}")
             return jsonify({"message": "Error retrieving results."}), 500
-        
+
     @app.route('/api/student/exams/<int:exam_id>/cancel', methods=['POST'])
     @student_required
     def cancel_exam_session(exam_id):
@@ -1224,17 +1236,14 @@ def create_app(config_class=Config):
         data = request.get_json()
         reason = data.get('reason', 'Proctoring violation detected')
 
-        # 1. Fetch Exam (needed for allowed_attempts and total_questions)
-        exam = db.session.get(Exam, exam_id, options=[selectinload(Exam.questions)]) # Load questions too
+        exam = db.session.get(Exam, exam_id, options=[selectinload(Exam.questions)])
         if not exam:
             app.logger.warning(f"Cancellation failed: Exam {exam_id} not found for user {student.id}")
             return jsonify({"message": "Exam not found, cancellation cannot be recorded."}), 404
 
-        # 2. Check if student CAN actually use an attempt slot BEFORE creating cancelled one
         attempts_taken = ExamSubmission.query.filter_by(user_id=student.id, exam_id=exam_id).count()
         if attempts_taken >= exam.allowed_attempts:
             app.logger.warning(f"Cancellation ignored: User {student.id} already reached max attempts ({exam.allowed_attempts}) for exam {exam.id}. No cancellation submission created.")
-            # --- Log notification even if attempt isn't recorded ---
             try:
                 subject_name = exam.subject if exam.subject else 'N/A'
                 log_message = f"Proctoring violation detected for '{student.username}' on exam '{exam.name}' ({subject_name}) after max attempts were already used. Reason: {reason}."
@@ -1248,39 +1257,33 @@ def create_app(config_class=Config):
                 app.logger.info(f"Logged EXAM_CANCELLED notification for user {student.id}, exam {exam.id} (max attempts reached).")
             except Exception as log_err:
                  db.session.rollback(); app.logger.error(f"Failed to create notification log for cancellation (max attempts reached) user {student.id}, exam {exam.id}: {log_err}", exc_info=True)
-            # --- Clear proctoring state ---
             try: proctoring.clear_proctoring_state(student.id)
             except Exception as proc_e: app.logger.error(f"Error clearing proctoring state after failed cancellation log (max attempts): {proc_e}")
-            # --- Inform user ---
             return jsonify({"message": f"Proctoring violation noted, but maximum attempts ({exam.allowed_attempts}) were already recorded for this exam."}), 403
 
         app.logger.warning(f"Processing exam cancellation for user {student.id}, exam {exam.id}. Reason: {reason}. Creating cancelled submission record.")
 
         try:
-            # 3. Create Cancelled ExamSubmission Record
-            # Calculate total questions (Ensure model has total_questions_count as non-nullable)
             total_questions = 0
             if exam.questions:
                 try:
-                    # Efficiently count loaded questions if selectinload worked
-                    total_questions = len(exam.questions)
-                except: # Fallback if direct len() fails or questions not loaded
-                    total_questions = Question.query.filter_by(exam_id=exam.id).count()
-
+                    total_questions = exam.questions.count() # Use count() on dynamic relationship
+                except Exception as q_count_err:
+                    app.logger.warning(f"Could not count questions for cancellation record: {q_count_err}")
+                    # Fallback maybe? Or accept 0 if count fails?
+                    total_questions = 0
 
             cancelled_submission = ExamSubmission(
                 user_id=student.id, exam_id=exam_id,
                 submitted_at=datetime.now(timezone.utc),
                 score=None, correct_answers_count=None,
-                total_questions_count=total_questions, # Provide the count
-                answers={}, status=SubmissionStatusEnum.CANCELLED_PROCTORING # Set status
+                total_questions_count=total_questions,
+                answers={}, status=SubmissionStatusEnum.CANCELLED_PROCTORING
             )
             db.session.add(cancelled_submission)
-            # *** COMMIT THE SUBMISSION ***
             db.session.commit()
             app.logger.info(f"Created CANCELLED submission record (ID: {cancelled_submission.id}) for user {student.id}, exam {exam.id}. Attempt count will increase.")
 
-            # 4. Log Notification (AFTER successful submission commit)
             try:
                 subject_name = exam.subject if exam.subject else 'N/A'
                 log_message = f"Exam '{exam.name}' ({subject_name}) attempt by '{student.username}' was CANCELLED due to proctoring violation and recorded as an attempt. Reason: {reason}."
@@ -1293,23 +1296,21 @@ def create_app(config_class=Config):
                 db.session.commit()
                 app.logger.info(f"Created EXAM_CANCELLED notification log for user {student.id}, exam {exam.id} (linked to sub ID {cancelled_submission.id})")
             except Exception as log_err:
-                 db.session.rollback(); app.logger.error(f"Failed to create notification log for cancellation user {student.id}, exam {exam_id} after creating submission: {log_err}", exc_info=True)
+                 db.session.rollback(); app.logger.error(f"Failed to create notification log for cancellation user {student.id}, exam {exam.id} after creating submission: {log_err}", exc_info=True)
 
-            # 5. Clear Proctoring State
             try: proctoring.clear_proctoring_state(student.id); app.logger.info(f"Cleared proctoring state for user {student.id} after cancellation.")
             except Exception as proc_e: app.logger.error(f"Error clearing proctoring state after cancellation for user {student.id}: {proc_e}", exc_info=True)
 
             return jsonify({"message": "Exam attempt cancelled due to violation and recorded successfully."}), 200
 
         except Exception as e:
-            db.session.rollback() # Rollback if submission creation or outer block fails
+            db.session.rollback()
             app.logger.exception(f"Error processing exam cancellation and recording submission for user {student.id}, exam {exam.id}: {e}")
-            return jsonify({"message": "Failed to record exam cancellation due to an internal error."}), 500                
+            return jsonify({"message": "Failed to record exam cancellation due to an internal error."}), 500
 
     @app.route('/api/admin/dashboard/notifications', methods=['GET'])
     @admin_required
     def get_recent_notifications():
-        # Pastikan fungsi ini ada di bagian Admin Routes
         """Gets recent notification logs for the admin dashboard."""
         try:
             limit = request.args.get('limit', 15, type=int) # Ambil 15 terbaru
@@ -1321,7 +1322,6 @@ def create_app(config_class=Config):
                             .limit(limit)\
                             .all()
 
-            # Gunakan to_dict dari model NotificationLog (pastikan to_dict ada dan benar)
             results = [n.to_dict() for n in notifications]
             app.logger.info(f"Fetched {len(results)} recent notifications for admin.")
             return jsonify(results), 200
@@ -1329,7 +1329,7 @@ def create_app(config_class=Config):
         except Exception as e:
             app.logger.exception(f"Error fetching recent notifications: {e}")
             return jsonify({"message": "Error fetching notifications."}), 500
-        
+
     @app.route('/api/student/dashboard', methods=['GET'])
     @student_required
     def get_student_dashboard_data():
@@ -1357,7 +1357,6 @@ def create_app(config_class=Config):
                     'duration': exam.duration,
                     'allowed_attempts': exam.allowed_attempts
                 }
-                 # Add attempts taken for dashboard display
                 attempts = ExamSubmission.query.filter_by(user_id=user.id, exam_id=exam.id).count()
                 exam_data['attempts_taken'] = attempts
                 exam_data['can_attempt'] = attempts < exam.allowed_attempts
@@ -1382,6 +1381,7 @@ def create_app(config_class=Config):
                     'score': sub.score, # Send raw score, let frontend format
                     'correctAnswers': sub.correct_answers_count,
                     'totalQuestions': sub.total_questions_count,
+                    'status': sub.status.value if sub.status else SubmissionStatusEnum.COMPLETED.value
                 })
 
             return jsonify({'upcomingExams': upcoming_exams_data, 'recentResults': recent_results_data}), 200
@@ -1398,7 +1398,6 @@ def create_app(config_class=Config):
         student = g.current_user
         app.logger.info(f"Fetching profile for student {student.id}")
         try:
-            # User.to_dict should handle including groups based on the flag
             profile_data = student.to_dict(include_groups=True)
             return jsonify(profile_data), 200
         except Exception as e:
@@ -1417,9 +1416,6 @@ def create_app(config_class=Config):
         updated_fields = []
         errors = {}
 
-        # Example: Allow changing password, maybe restrict username change
-        # new_username = data.get('username') # If allowing username change, add validation here
-
         new_password = data.get('password')
         if new_password: # Only update if a new password is provided
             if len(new_password) < 6:
@@ -1437,15 +1433,13 @@ def create_app(config_class=Config):
         try:
             db.session.commit()
             app.logger.info(f"Profile updated for User ID: {student.id}. Fields: {', '.join(updated_fields)}")
-            # Return updated profile (without sensitive info like password hash)
             updated_profile_data = student.to_dict(include_groups=True)
             return jsonify({"message": f"Profile updated successfully ({', '.join(updated_fields)} changed).","user": updated_profile_data}), 200
         except IntegrityError as ie: # Catch potential username duplicate if username change is allowed
             db.session.rollback()
             app.logger.warning(f"Integrity error updating profile for user {student.id}: {ie}")
-            # Assume it's the username if that was being changed
-            errors['username'] = "Username already taken."
-            return jsonify({"message": "Update failed: Username may already be taken.", "errors": errors}), 409
+            errors['username'] = "Username already taken." # Assume username issue if allowed
+            return jsonify({"message": "Update failed: Constraint violation.", "errors": errors}), 409
         except Exception as e:
             db.session.rollback()
             app.logger.exception(f"Database error updating profile for user {student.id}: {e}")
@@ -1465,29 +1459,22 @@ def create_app(config_class=Config):
             app.logger.warning(f"Analyze frame request missing frame data for user {user_id}")
             return jsonify({"message": "Missing frame data"}), 400
         try:
-            # Ensure proctoring module and function exist before calling
             if hasattr(proctoring, 'analyze_frame_proctoring'):
                 analysis_result = proctoring.analyze_frame_proctoring(user_id, frame_data)
-                # Check the structure of analysis_result
                 if isinstance(analysis_result, dict) and "success" in analysis_result:
                     if analysis_result["success"]:
-                        # Return relevant fields, ensure cheating_detected is present
                         response_data = {
                              "cheating_detected": analysis_result.get("cheating_detected", False),
                              "reason": analysis_result.get("reason", None),
-                             "details": analysis_result.get("details", None), # Include any extra details
+                             "details": analysis_result.get("details", None),
                              "head_pose_score": analysis_result.get("head_pose_score", 0.0)
                          }
                         response_data = {k: v for k, v in response_data.items() if v is not None} # Clean None values
-
-                        if "head_pose_score" not in response_data and analysis_result.get("head_pose_score") is not None:
-                             response_data["head_pose_score"] = analysis_result.get("head_pose_score")
 
                         if response_data.get("cheating_detected"):
                              app.logger.info(f"Proctoring violation detected for user {user_id}: {response_data.get('reason', 'N/A')}")
                         return jsonify(response_data), 200
                     else:
-                        # Analysis failed within the proctoring module
                         status_code = 500 if "error" in analysis_result.get("message", "").lower() else 400
                         app.logger.error(f"Proctoring analysis failed for user {user_id}: {analysis_result.get('message', 'Unknown error')}")
                         return jsonify({"message": analysis_result.get("message", "Analysis error"), "cheating_detected": False, "reason": "Analysis Error"}), status_code
@@ -1502,80 +1489,15 @@ def create_app(config_class=Config):
              app.logger.exception(f"Unexpected error in analyze_frame endpoint for user {user_id}: {e}")
              return jsonify({"message": "Internal server error during frame analysis.", "head_pose_score": 0.0}), 500
 
-
-    # --- Database Initialization Command ---
-    @app.cli.command("init-db")
-    def init_db_command():
-        """Drops existing tables and creates new ones based on models, then seeds initial data."""
-        with app.app_context():
-            app.logger.info("--- Starting Database Initialization ---")
-            app.logger.info("Dropping all tables...")
-            db.drop_all()
-            app.logger.info("Creating all tables...")
-            db.create_all()
-            app.logger.info("Seeding initial data...")
-            try:
-                # Create Admin User
-                admin = User(username='admin', role=RoleEnum.ADMIN)
-                admin.set_password('admin123')
-                db.session.add(admin)
-
-                # Create Student User
-                student = User(username='student', role=RoleEnum.STUDENT)
-                student.set_password('student123')
-                db.session.add(student)
-
-                # Create Sample Exams
-                e1 = Exam(name='Midterm Math', subject='Mathematics', duration=60, status=ExamStatusEnum.PUBLISHED, allowed_attempts=1)
-                e2 = Exam(name='CS Fundamentals Quiz 1', subject='Computer Science', duration=30, status=ExamStatusEnum.DRAFT, allowed_attempts=2)
-                e3 = Exam(name='World History Test', subject='History', duration=45, status=ExamStatusEnum.ARCHIVED, allowed_attempts=1)
-                e4 = Exam(name='Physics Basics', subject='Physics', duration=50, status=ExamStatusEnum.PUBLISHED, allowed_attempts=1) # Another published one
-                db.session.add_all([e1, e2, e3, e4])
-                db.session.flush() # Flush to get IDs for exams
-
-                # Add Questions to Exam 1 (Midterm Math)
-                q1_1 = Question(exam_id=e1.id, text="What is 2 + 2?", options=["3", "4", "5"], correct_answer="4")
-                q1_2 = Question(exam_id=e1.id, text="What is 5 * 8?", options=["30", "40", "45", "58"], correct_answer="40")
-                db.session.add_all([q1_1, q1_2])
-
-                # Add Questions to Exam 4 (Physics Basics)
-                q4_1 = Question(exam_id=e4.id, text="What is the unit of force?", options=["Joule", "Watt", "Newton", "Pascal"], correct_answer="Newton")
-                q4_2 = Question(exam_id=e4.id, text="What is 'c' in E=mc^2?", options=["Charge", "Speed of Light", "Constant", "Mass"], correct_answer="Speed of Light")
-                db.session.add_all([q4_1, q4_2])
-
-                # Add Questions to Exam 2 (CS Draft)
-                q2_1 = Question(exam_id=e2.id, text="What does CPU stand for?", options=["Central Processing Unit", "Computer Processing Unit", "Core Programming Unit"], correct_answer="Central Processing Unit")
-                db.session.add(q2_1)
-
-                # Create a sample submission for student on Exam 1
-                sub1 = ExamSubmission(
-                    user_id=student.id, exam_id=e1.id, score=50.0, correct_answers_count=1, total_questions_count=2,
-                    answers={str(q1_1.id): "4", str(q1_2.id): "45"} # Example answers (one correct, one wrong)
-                )
-                db.session.add(sub1)
-
-                # Create a group and add the student
-                group1 = UserGroup(name="Class A", description="Standard Class Section")
-                db.session.add(group1)
-                db.session.flush() # Get group ID
-                group1.students.append(student) # Add student to the group
-
-                # Assign Exam 4 to Class A
-                e4.assigned_groups.append(group1)
-
-
-                db.session.commit()
-                app.logger.info("Database seeded successfully with sample data.")
-            except Exception as e:
-                db.session.rollback()
-                app.logger.exception(f"Error seeding database: {e}")
-                # Re-raise or handle as appropriate
-                raise e
-            app.logger.info("--- Database Initialization Complete ---")
-
     return app
 
 # --- Run the Flask Development Server ---
 if __name__ == '__main__':
     flask_app = create_app()
+    # --- IMPORTANT ---
+    # Ensure Application Default Credentials (ADC) are set up before running
+    # if using the Cloud SQL Connector (which is recommended).
+    # Run `gcloud auth application-default login` in your terminal environment.
+    # The service account used in deployment needs the 'Cloud SQL Client' IAM role.
+    # ---
     flask_app.run(host='0.0.0.0', debug=True, port=5001, threaded=True, use_reloader=True)

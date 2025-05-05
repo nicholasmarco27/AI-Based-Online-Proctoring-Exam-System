@@ -8,149 +8,136 @@ from datetime import datetime, timezone, timedelta
 from werkzeug.security import check_password_hash
 import enum
 import numpy as np
-# import mediapipe as mp # Commented out if not strictly needed currently
-import io # Keep for CSV
-import logging # Import logging
+# import mediapipe as mp
+import io
+import logging
+import json # <-- Import json
+import tempfile # <-- Import tempfile
+import atexit # <-- Import atexit for cleanup
 
 # --- Cloud SQL Connector Imports ---
 import sqlalchemy
 from google.cloud.sql.connector import Connector, IPTypes
 
 # Import models and config
-# Make sure UserGroup is imported
 from models import (
     db, User, Exam, Question, RoleEnum, ExamStatusEnum, ExamSubmission,
     UserGroup, NotificationLog, NotificationType, SubmissionStatusEnum
 )
-from config import Config
-# Dotenv loading is usually handled within Config class now if using python-dotenv >= 0.19
-# from dotenv import load_dotenv
+from config import Config # <-- Ensure Config is imported
 
 # Import utilities from SQLAlchemy
-from sqlalchemy.orm import joinedload, selectinload # selectinload can be efficient for one-to-many
-from sqlalchemy.exc import IntegrityError # For handling unique constraint violations
+from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.exc import IntegrityError
 
 # --- Import the proctoring module ---
-# Assuming proctoring.py exists and has the necessary functions
 try:
     import proctoring
 except ImportError:
-    # Create a dummy proctoring module if not found, allowing app to run
     class DummyProctoring:
         def initialize_proctoring_state(self, user_id): pass
         def clear_proctoring_state(self, user_id): pass
         def analyze_frame_proctoring(self, user_id, frame_data):
-            # Return a default non-cheating response
             return {"success": True, "cheating_detected": False, "reason": "Proctoring disabled"}
     proctoring = DummyProctoring()
     logging.warning("Proctoring module not found, using dummy implementation.")
-
 
 # Import pandas for CSV processing
 try:
     import pandas as pd
 except ImportError:
-    pd = None # Handle gracefully if pandas is not installed
+    pd = None
     logging.warning("Pandas library not found. CSV import feature will be disabled.")
 
-
-# Global connector instance and credentials cache
+# --- Helper Function for Cloud SQL Connection ---
 connector = None
-_sa_credentials = None
-_connector_initialized_with_creds = False # Flag to track initialization method
-
-def get_credentials_from_env():
-    """
-    Attempts to load Google Cloud service account credentials from the
-    GCP_SERVICE_ACCOUNT_KEY_JSON environment variable. Caches the result.
-    Returns credentials object or None if the variable is not set.
-    Raises ValueError on parsing/loading errors.
-    """
-    global _sa_credentials
-    # Return cached credentials if already loaded
-    if _sa_credentials is not None:
-        return _sa_credentials
-
-    key_json_str = os.environ.get("GCP_SERVICE_ACCOUNT_KEY_JSON")
-    if not key_json_str:
-        # Environment variable not set, return None to signal fallback to ADC
-        logging.info("GCP_SERVICE_ACCOUNT_KEY_JSON environment variable not found. Will attempt default ADC.")
-        return None
-
-    logging.info("Found GCP_SERVICE_ACCOUNT_KEY_JSON. Attempting to load credentials...")
-    try:
-        # Use io.StringIO to treat the string as a file-like object for parsing
-        key_info = json.load(file_io.StringIO(key_json_str))
-        _sa_credentials = service_account.Credentials.from_service_account_info(key_info)
-        logging.info("Successfully loaded service account credentials from environment variable.")
-        return _sa_credentials
-    except Exception as e:
-        logging.exception(f"Failed to parse or load credentials from GCP_SERVICE_ACCOUNT_KEY_JSON: {e}")
-        # Raise an error as the variable was set but invalid
-        raise ValueError("Invalid format or content in GCP_SERVICE_ACCOUNT_KEY_JSON environment variable.") from e
-
-
-def initialize_connector():
-    """Initializes the global Cloud SQL Connector instance.
-    Tries to use credentials from environment variable first (for Vercel),
-    falls back to default Application Default Credentials (ADC) otherwise (for local).
-    """
-    global connector, _connector_initialized_with_creds
-    if connector is not None:
-        # Already initialized
-        return
-
-    try:
-        creds = get_credentials_from_env()
-        if creds:
-            # Initialize Connector WITH explicit credentials from ENV VAR
-            connector = Connector(credentials=creds)
-            _connector_initialized_with_creds = True
-            logging.info("Cloud SQL Connector initialized WITH credentials from environment.")
-        else:
-            # Initialize Connector WITHOUT explicit credentials, relying on ADC
-            # (e.g., gcloud auth application-default login, or GOOGLE_APPLICATION_CREDENTIALS file path)
-            connector = Connector()
-            _connector_initialized_with_creds = False
-            logging.info("Cloud SQL Connector initialized using default ADC.")
-    except Exception as e:
-        logging.exception(f"FATAL: Failed to initialize Cloud SQL Connector: {e}")
-        # If connector fails to initialize, the app likely can't run.
-        # Consider raising a more specific error or exiting.
-        raise RuntimeError("Could not initialize database connector.") from e
+_db_conn = None # Cache the connection within the app context if needed, but connector handles pooling
 
 def getconn() -> sqlalchemy.engine.base.Connection:
     """
-    Establishes a database connection using the initialized Cloud SQL Connector.
-    This function is used by SQLAlchemy as the 'creator'.
+    Creates a secure database connection pool for Cloud SQL using the connector.
+    Relies on credentials found by the connector (e.g., GOOGLE_APPLICATION_CREDENTIALS).
     """
-    # Ensure connector is initialized (idempotent call)
-    initialize_connector()
-
-    # Check if connector was successfully initialized before proceeding
+    global connector
     if connector is None:
-         # This case should ideally be caught by initialize_connector raising an error,
-         # but added as a safeguard.
-         logging.error("FATAL: Cloud SQL Connector is None when trying to get connection.")
-         raise RuntimeError("Database connector was not initialized.")
+        logging.info("Initializing Cloud SQL Connector...")
+        # Connector() will automatically look for credentials
+        # (GOOGLE_APPLICATION_CREDENTIALS, gcloud auth, etc.)
+        connector = Connector()
 
     try:
-        # Use the globally initialized connector instance
+        # Use application default credentials found by the connector
         conn = connector.connect(
-            Config.INSTANCE_CONNECTION_NAME, # From config.py
-            "pymysql",                       # DBAPI driver
-            user=Config.DB_USER,             # From config.py
-            password=Config.DB_PASS,         # From config.py
-            db=Config.DB_NAME,               # From config.py
-            ip_type=IPTypes.PUBLIC           # MUST use Public IP for Vercel
+            Config.INSTANCE_CONNECTION_NAME,
+            "pymysql",
+            user=Config.DB_USER,
+            password=Config.DB_PASS,
+            db=Config.DB_NAME,
+            ip_type=IPTypes.PUBLIC # Or IPTypes.PRIVATE
         )
-        # logging.debug("Successfully obtained DB connection from connector.") # Optional: verbose logging
         return conn
     except Exception as e:
-        # Log detailed connection error
-        logging.exception(f"Failed to connect to Cloud SQL instance '{Config.INSTANCE_CONNECTION_NAME}' as user '{Config.DB_USER}' using connector: {e}")
-        # Re-raise the exception so SQLAlchemy/Flask knows the connection failed
+        logging.exception(f"Failed to connect to Cloud SQL instance '{Config.INSTANCE_CONNECTION_NAME}' as user '{Config.DB_USER}': {e}")
         raise
+
+# --- Temporary Service Account File Handling ---
+_temp_sa_key_file = None
+
+def _cleanup_temp_sa_file():
+    """Function to remove the temporary SA key file on exit."""
+    global _temp_sa_key_file
+    if _temp_sa_key_file and os.path.exists(_temp_sa_key_file.name):
+        try:
+            logging.info(f"Cleaning up temporary service account key file: {_temp_sa_key_file.name}")
+            _temp_sa_key_file.close() # Ensure it's closed
+            os.remove(_temp_sa_key_file.name) # Then remove
+            _temp_sa_key_file = None
+        except Exception as e:
+            logging.error(f"Error cleaning up temporary SA key file {_temp_sa_key_file.name}: {e}", exc_info=True)
+
+def _setup_service_account_credentials(config):
+    """
+    Checks for SA key JSON string in config, writes to temp file,
+    and sets GOOGLE_APPLICATION_CREDENTIALS environment variable.
+    """
+    global _temp_sa_key_file
+    sa_key_json_string = config.get('GCP_SERVICE_ACCOUNT_KEY_JSON_STRING')
+
+    if sa_key_json_string:
+        logging.info("Found GCP_SERVICE_ACCOUNT_KEY_JSON in config. Setting up temporary credentials file.")
+        try:
+            # Validate if it's actually JSON (optional but good)
+            # json.loads(sa_key_json_string) # This would raise error if invalid
+
+            # Create a temporary file securely
+            # Use delete=False because we need the file path to persist
+            # while the app is running. We'll clean it up with atexit.
+            _temp_sa_key_file = tempfile.NamedTemporaryFile(mode='w+', encoding='utf-8', delete=False)
+
+            _temp_sa_key_file.write(sa_key_json_string)
+            _temp_sa_key_file.flush() # Ensure content is written to disk
+            # temp_file.close() # Keep open? No, path is needed. Close handled by cleanup.
+
+            sa_key_file_path = _temp_sa_key_file.name
+            logging.info(f"Setting GOOGLE_APPLICATION_CREDENTIALS to temporary file: {sa_key_file_path}")
+            os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = sa_key_file_path
+
+            # Register the cleanup function to run when the program exits
+            atexit.register(_cleanup_temp_sa_file)
+
+        except (json.JSONDecodeError, TypeError) as json_err:
+             logging.error(f"Invalid JSON content found in GCP_SERVICE_ACCOUNT_KEY_JSON environment variable: {json_err}")
+             # Decide how to handle: fail startup or proceed without SA key?
+             # For now, log error and proceed (connector might find other credentials)
+        except Exception as e:
+            logging.exception(f"Error setting up temporary service account credentials file: {e}")
+            # Clean up if file was partially created but failed
+            if _temp_sa_key_file:
+                _cleanup_temp_sa_file()
+            # Again, decide if this is fatal error for the app
+    else:
+        logging.info("GCP_SERVICE_ACCOUNT_KEY_JSON not found in config. Connector will use default credential discovery.")
+
 
 # Factory function to create the Flask application
 def create_app(config_class=Config):
@@ -162,31 +149,29 @@ def create_app(config_class=Config):
     logging.basicConfig(level=log_level,
                         format='%(asctime)s %(levelname)s %(name)s %(threadName)s : %(message)s')
     app.logger.info(f"Flask App starting with log level {log_level}")
-    # --------------------------
+
+    # --- !!! Setup Service Account Credentials FIRST !!! ---
+    # This needs to run BEFORE the connector might be initialized implicitly or explicitly
+    _setup_service_account_credentials(app.config)
+    # --- !!! End Service Account Setup !!! ---
+
 
     # --- Configure SQLAlchemy to use Cloud SQL Connector ---
-    # Basic check for essential DB config from Config class (loaded from env)
     if not all([app.config.get('DB_USER'), app.config.get('DB_PASS'), app.config.get('DB_NAME'), app.config.get('INSTANCE_CONNECTION_NAME')]):
-        # Raise error early if essential DB connection info is missing
-        raise ValueError("Missing essential Cloud SQL DB configuration (DB_USER, DB_PASS, DB_NAME, INSTANCE_CONNECTION_NAME) in environment variables/Config.")
-
-    # Note: Initialization of the connector (including credential check)
-    # now happens lazily within the first call to getconn() via initialize_connector().
-    # This avoids needing the credential ENV VAR check directly here at app creation.
+        raise ValueError("Missing Cloud SQL database configuration in Config (DB_USER, DB_PASS, DB_NAME, INSTANCE_CONNECTION_NAME)")
 
     app.logger.info(f"Configuring SQLAlchemy for Cloud SQL instance: {app.config['INSTANCE_CONNECTION_NAME']}")
 
-    # Configure the SQLAlchemy engine options BEFORE db.init_app()
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-        "creator": getconn,       # Use the getconn function (which handles connector init)
-        "pool_size": 5,           # Adjust based on expected load/concurrency
+        "creator": getconn,
+        "pool_size": 5,
         "max_overflow": 2,
         "pool_timeout": 30,
-        "pool_recycle": 1800,     # Important for preventing stale connections
+        "pool_recycle": 1800,
     }
-    app.config['SQLALCHEMY_DATABASE_URI'] = "mysql+pymysql://" # Dummy URI
+    # Dummy URI needed by Flask-SQLAlchemy, but connection is handled by 'creator'
+    app.config['SQLALCHEMY_DATABASE_URI'] = "mysql+pymysql://"
 
-    # --- End SQLAlchemy Configuration ---
 
     # Create instance folder if it doesn't exist
     try:
@@ -196,19 +181,19 @@ def create_app(config_class=Config):
     except OSError as e:
         app.logger.error(f"Error creating instance path {app.instance_path}: {e}", exc_info=True)
 
-    # Initialize SQLAlchemy AFTER setting engine options
+
+    # Initialize SQLAlchemy AFTER setting engine options and SA creds
     db.init_app(app)
 
     # Initialize CORS
-    CORS(app, resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000", # Add deployed frontend origin here later
-                                             # e.g., "https://your-frontend-domain.vercel.app"
-                                             ],
+    CORS(app, resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000", "https://intellixam.vercel.app"],
                                 "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
                                 "allow_headers": ["Content-Type", "Authorization"],
                                 "supports_credentials": True }})
 
 
     # --- Authentication Helper Functions ---
+    # (create_token, token_required, admin_required, student_required remain the same)
     def create_token(user_id, role):
         payload = {
             'user_id': user_id,
@@ -230,14 +215,12 @@ def create_app(config_class=Config):
                 return jsonify({'message': 'Token is missing'}), 401
             try:
                 data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
-                # Use session.get for optimized primary key lookup
-                current_user = db.session.get(User, data['user_id'])
+                current_user = db.session.get(User, data['user_id']) # Use session.get for primary key lookup
                 if not current_user:
                      app.logger.warning(f"User with ID {data['user_id']} (from token) not found in database.")
                      return jsonify({'message': 'User not found'}), 401
-                # Attach user and role to Flask's global context 'g' for access within the request
                 g.current_user = current_user
-                g.current_role = data['role']
+                g.current_role = data['role'] # Store role from token
                 app.logger.debug(f"Token validated for user {g.current_user.username} (Role: {g.current_role})")
             except jwt.ExpiredSignatureError:
                 app.logger.info("Token has expired.")
@@ -248,13 +231,12 @@ def create_app(config_class=Config):
             except Exception as e:
                  app.logger.exception(f"Unexpected error during token validation: {e}") # Log full exception
                  return jsonify({'message': 'Token validation error'}), 401
-            # Proceed to the actual route function
             return f(*args, **kwargs)
         return decorated
 
     def admin_required(f):
         @wraps(f)
-        @token_required # Ensures token is valid and g.current_role is set
+        @token_required
         def decorated(*args, **kwargs):
             if g.current_role != RoleEnum.ADMIN.value:
                  app.logger.warning(f"Admin action denied for user {g.current_user.username} (Role: {g.current_role}) on endpoint {request.path}")
@@ -264,7 +246,7 @@ def create_app(config_class=Config):
 
     def student_required(f):
         @wraps(f)
-        @token_required # Ensures token is valid and g.current_role is set
+        @token_required
         def decorated(*args, **kwargs):
              if g.current_role != RoleEnum.STUDENT.value:
                  app.logger.warning(f"Student action denied for user {g.current_user.username} (Role: {g.current_role}) on endpoint {request.path}")
@@ -272,11 +254,12 @@ def create_app(config_class=Config):
              return f(*args, **kwargs)
         return decorated
 
-
     # --- API Routes ---
-    # Note: ALL original API routes remain unchanged below this point.
-    # They will now use the SQLAlchemy session connected to Cloud SQL via the connector.
+    # ALL your existing API routes (@app.route(...)) remain unchanged below this point.
+    # They will now use the database connection established using the
+    # service account credentials (if provided) or default credentials.
 
+    # ... (Keep all your existing routes: /api/login, /api/register, admin routes, student routes, etc.) ...
     # Authentication Routes
     @app.route('/api/login', methods=['POST'])
     def login():
@@ -291,7 +274,7 @@ def create_app(config_class=Config):
             return jsonify({'message': 'Invalid credentials'}), 401
         token = create_token(user.id, user.role)
         app.logger.info(f"User '{user.username}' logged in successfully.")
-        return jsonify({'token': token, 'role': user.role.value, 'username': user.username})
+        return jsonify({'token': token, 'role': user.role.value, 'username': user.username}) # Return role and username
 
     @app.route('/api/register', methods=['POST'])
     def register():
@@ -1559,12 +1542,26 @@ def create_app(config_class=Config):
     return app
 
 # --- Run the Flask Development Server ---
+# Use the app instance created by the factory
+app = create_app()
+
+# Simple route for testing if the app is up
+@app.route('/')
+def home():
+    # Test DB connection optionally on home route (can be slow)
+    # try:
+    #     db.session.execute(sqlalchemy.text('SELECT 1'))
+    #     db.session.commit() # or rollback()
+    #     return 'Hello, Flask is running and DB connection seems OK!'
+    # except Exception as e:
+    #     logging.error(f"DB connection check failed: {e}")
+    #     return 'Hello, Flask is running BUT DB connection failed!', 500
+    return 'Hello, Flask is running!'
+
+
 if __name__ == '__main__':
-    flask_app = create_app()
-    # --- IMPORTANT ---
-    # Ensure Application Default Credentials (ADC) are set up before running
-    # if using the Cloud SQL Connector (which is recommended).
-    # Run `gcloud auth application-default login` in your terminal environment.
-    # The service account used in deployment needs the 'Cloud SQL Client' IAM role.
-    # ---
-    flask_app.run(host='0.0.0.0', debug=True, port=5001, threaded=True, use_reloader=True)
+    # Use environment variable for port or default to 5001
+    port = int(os.environ.get('PORT', 5001))
+    # Debug should be False in production, controlled by an environment variable
+    debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() in ('true', '1', 't')
+    app.run(debug=debug_mode, host='0.0.0.0', port=port) # Listen on all interfaces if needed for containerization/external access

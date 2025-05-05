@@ -15,5 +15,6 @@ class Config:
     DB_PASS = os.environ.get("DB_PASS") # e.g., 'your_database_password'
     DB_NAME = os.environ.get("DB_NAME") # e.g., 'capstone' or 'myapp_production'
     INSTANCE_CONNECTION_NAME = os.environ.get("INSTANCE_CONNECTION_NAME")
+    GCP_SERVICE_ACCOUNT_KEY_JSON_STRING = os.environ.get('GCP_SERVICE_ACCOUNT_KEY_JSON')
 
     SQLALCHEMY_TRACK_MODIFICATIONS = False

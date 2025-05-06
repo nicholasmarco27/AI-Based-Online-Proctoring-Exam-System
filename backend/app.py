@@ -959,8 +959,8 @@ def create_app(config_class=Config):
 
             if not exam: return jsonify({"message": "Exam not found."}), 404
             if exam.status != ExamStatusEnum.PUBLISHED:
-                 app.logger.warning(f"Student {student.id} attempt to take non-published exam {exam_id} (Status: {exam.status.value}).")
-                 return jsonify({"message": "This exam is not currently available."}), 403 # Forbidden
+                app.logger.warning(f"Student {student.id} attempt to take non-published exam {exam_id} (Status: {exam.status.value}).")
+                return jsonify({"message": "This exam is not currently available."}), 403 # Forbidden
 
             # Check Group Assignment
             if exam.assigned_groups: # Only check if exam IS assigned to groups
@@ -973,8 +973,8 @@ def create_app(config_class=Config):
             # Check Attempts Left
             attempts_taken = ExamSubmission.query.filter_by(user_id=student.id, exam_id=exam_id).count()
             if attempts_taken >= exam.allowed_attempts:
-                 app.logger.warning(f"Student {student.id} attempt to take exam {exam_id}: Max attempts ({exam.allowed_attempts}) already reached.")
-                 return jsonify({"message": f"You have already used all {exam.allowed_attempts} attempt(s) for this exam."}), 403 # Forbidden
+                app.logger.warning(f"Student {student.id} attempt to take exam {exam_id}: Max attempts ({exam.allowed_attempts}) already reached.")
+                return jsonify({"message": f"You have already used all {exam.allowed_attempts} attempt(s) for this exam."}), 403 # Forbidden
 
             # Prepare exam data (remove correct answers)
             exam_data = exam.to_dict(include_questions=True, include_groups=False) # Get questions
@@ -984,18 +984,18 @@ def create_app(config_class=Config):
 
             # Initialize Proctoring State (if enabled)
             try:
-                 proctoring.initialize_proctoring_state(student.id)
-                 app.logger.info(f"Student {student.id} starting exam {exam_id}. Proctoring initialized.")
+                proctoring.initialize_proctoring_state(student.id)
+                app.logger.info(f"Student {student.id} starting exam {exam_id}. Proctoring initialized.")
             except Exception as proc_e:
-                 app.logger.error(f"Failed to initialize proctoring for student {student.id}, exam {exam_id}: {proc_e}", exc_info=True)
-                 # Decide if this should prevent the exam from starting
-                 # return jsonify({"message": "Could not initialize proctoring session. Please try again."}), 500
+                app.logger.error(f"Failed to initialize proctoring for student {student.id}, exam {exam_id}: {proc_e}", exc_info=True)
+                # Decide if this should prevent the exam from starting
+                # return jsonify({"message": "Could not initialize proctoring session. Please try again."}), 500
 
             return jsonify(exam_data)
 
         except Exception as e:
-             app.logger.exception(f"Error fetching exam {exam_id} for student {student.id}: {e}")
-             return jsonify({"message": "Error retrieving exam details."}), 500
+            app.logger.exception(f"Error fetching exam {exam_id} for student {student.id}: {e}")
+            return jsonify({"message": "Error retrieving exam details."}), 500
 
 
     @app.route('/api/student/exams/<int:exam_id>/submit', methods=['POST'])
@@ -1306,7 +1306,7 @@ def create_app(config_class=Config):
                 db.session.commit()
                 app.logger.info(f"Logged EXAM_CANCELLED notification for user {student.id}, exam {exam.id} (max attempts reached).")
             except Exception as log_err:
-                 db.session.rollback(); app.logger.error(f"Failed to create notification log for cancellation (max attempts reached) user {student.id}, exam {exam.id}: {log_err}", exc_info=True)
+                db.session.rollback(); app.logger.error(f"Failed to create notification log for cancellation (max attempts reached) user {student.id}, exam {exam.id}: {log_err}", exc_info=True)
             try: proctoring.clear_proctoring_state(student.id)
             except Exception as proc_e: app.logger.error(f"Error clearing proctoring state after failed cancellation log (max attempts): {proc_e}")
             return jsonify({"message": f"Proctoring violation noted, but maximum attempts ({exam.allowed_attempts}) were already recorded for this exam."}), 403
@@ -1346,7 +1346,7 @@ def create_app(config_class=Config):
                 db.session.commit()
                 app.logger.info(f"Created EXAM_CANCELLED notification log for user {student.id}, exam {exam.id} (linked to sub ID {cancelled_submission.id})")
             except Exception as log_err:
-                 db.session.rollback(); app.logger.error(f"Failed to create notification log for cancellation user {student.id}, exam {exam.id} after creating submission: {log_err}", exc_info=True)
+                db.session.rollback(); app.logger.error(f"Failed to create notification log for cancellation user {student.id}, exam {exam.id} after creating submission: {log_err}", exc_info=True)
 
             try: proctoring.clear_proctoring_state(student.id); app.logger.info(f"Cleared proctoring state for user {student.id} after cancellation.")
             except Exception as proc_e: app.logger.error(f"Error clearing proctoring state after cancellation for user {student.id}: {proc_e}", exc_info=True)

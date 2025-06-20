@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: intellixam-backend
+    ports:
+      - "5001:5001"
+    environment:
+      - PORT=5001
+      - FLASK_DEBUG=False
+      - FLASK_ENV=production
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+      - DB_NAME=${DB_NAME}
+      - INSTANCE_CONNECTION_NAME=${INSTANCE_CONNECTION_NAME}
+      - SECRET_KEY=${SECRET_KEY}
+      - GCP_SERVICE_ACCOUNT_KEY_JSON_STRING=${GCP_SERVICE_ACCOUNT_KEY_JSON_STRING}
+    volumes:
+      - ./backend/logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - intellixam-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5001/', timeout=10)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  frontend:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    container_name: intellixam-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:5001/api
+      - NODE_ENV=production
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - intellixam-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  intellixam-network:
+    driver: bridge
+
+volumes:
+  backend_logs:
+    driver: local

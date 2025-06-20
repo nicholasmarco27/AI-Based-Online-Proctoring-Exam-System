@@ -10,7 +10,8 @@ import BarChartIcon from '@mui/icons-material/BarChart';
 import SettingsIcon from '@mui/icons-material/Settings';
 import MenuIcon from '@mui/icons-material/Menu';
 import LogoutIcon from '@mui/icons-material/Logout';
-import platformLogo from '../logo-myits-white.svg';
+import platformLogo from '../assets/intellixam.png';
+import PeopleOutlineIcon from '@mui/icons-material/PeopleOutline';
 
 const drawerWidth = 240;
 
@@ -37,7 +38,8 @@ function AdminLayout({ onLogout }) {
   const menuItems = [
     { text: 'Dashboard', icon: <DashboardIcon />, path: '/admin' },
     { text: 'Exams', icon: <AssignmentIcon />, path: '/admin/exams' },
-    { text: 'Users', icon: <GroupIcon />, path: '/admin/usergroups' },
+    { text: 'Classes', icon: <GroupIcon />, path: '/admin/usergroups' },
+    { text: 'Users', icon: <PeopleOutlineIcon />, path: '/admin/users' },
     // { text: 'Question Bank', icon: <QuestionAnswerIcon />, path: '/admin/questions' },
     // { text: 'Users', icon: <PeopleIcon />, path: '/admin/users' },
     // { text: 'Results', icon: <BarChartIcon />, path: '/admin/results' },
@@ -48,16 +50,14 @@ function AdminLayout({ onLogout }) {
     <div>
       <Toolbar sx={{
                       justifyContent: 'center',   // Center the content (logo + text group)
-                      bgcolor: theme.palette.primary.main,
-                      color: theme.palette.primary.contrastText,
                       alignItems: 'center' // Ensure items align vertically in the center
                   }}>
                       {/* Logo using Box component */}
                       <Box
                           component="img"
                           sx={{
-                              height: 30, // Adjust height as needed
-                              mr: 1.5,    // Add margin to the right (theme spacing units)
+                              height: 50, // Adjust height as needed
+                              mr: 0,    // Add margin to the right (theme spacing units)
                               // verticalAlign: 'middle' // Alternative alignment if needed
                           }}
                           alt="MyITS Platform Logo" // Important for accessibility
@@ -65,7 +65,7 @@ function AdminLayout({ onLogout }) {
                       />
       
                       {/* Your Title */}
-                      <Typography variant="h6" noWrap component="div">
+                      <Typography variant="h6" noWrap component="div" sx={{ color: 'black' }}>
                           Admin
                       </Typography>
                   </Toolbar>

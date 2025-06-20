@@ -126,13 +126,14 @@ function StudentProfile() {
 
     // --- API Call Handlers ---
 
-    // Handle Username Update
+    /* Handle Username Update
     const handleUpdateUsername = async () => {
         if (!newUsername || newUsername.trim().length < 3) {
             setUpdateStatus({ open: true, message: 'Username must be at least 3 characters long.', severity: 'warning' });
             return;
         }
-        if (newUsername.trim() === profileData.username) {
+        // Ensure profileData exists before comparing
+        if (profileData && newUsername.trim() === profileData.username) {
             setUpdateStatus({ open: true, message: 'Username is the same. No changes made.', severity: 'info' });
             handleCloseUsernameModal();
             return;
@@ -152,7 +153,8 @@ function StudentProfile() {
                 }
             );
 
-            setProfileData(prevData => ({ ...prevData, username: response.data.user.username }));
+            await fetchProfileAndUpdateState(); // Call the re-fetch function
+
             setUpdateStatus({ open: true, message: response.data.message || 'Username updated successfully!', severity: 'success' });
             handleCloseUsernameModal();
 
@@ -167,7 +169,7 @@ function StudentProfile() {
         } finally {
             setIsUpdating(false);
         }
-    };
+    };*/
 
     // Handle Password Update
     const handleUpdatePassword = async () => {
@@ -210,6 +212,27 @@ function StudentProfile() {
         }
     };
 
+    const fetchProfileAndUpdateState = async () => {
+        // No need to set isLoading for this re-fetch unless you want a spinner on the main page
+        // setIsLoading(true);
+        // setError(null);
+        if (!token) return; // Should not happen if already on this page
+
+        try {
+            const response = await apiClient.get('/student/profile', {
+                headers: { 'Authorization': `Bearer ${token}` },
+            });
+            setProfileData(response.data);
+            // setNewUsername(response.data.username || ''); // Optional: re-sync modal input if needed
+        } catch (err) {
+            console.error("Failed to re-fetch profile after update:", err);
+            // Handle re-fetch error if necessary, maybe show a specific snackbar message
+            setUpdateStatus({ open: true, message: 'Profile updated, but failed to refresh data. Please refresh the page.', severity: 'warning' });
+        } finally {
+            // setIsLoading(false);
+        }
+    };
+
 
     // --- Render Logic ---
     return (
@@ -247,10 +270,6 @@ function StudentProfile() {
                         <Avatar sx={{ width: { xs: 80, sm: 100, md: 120 }, height: { xs: 80, sm: 100, md: 120 }, background: `linear-gradient(45deg, #7b4dff 30%, #3da9fc 90%)`, color: '#fff', fontSize: '3rem' }}>
                             {profileData.username ? profileData.username.charAt(0).toUpperCase() : <PersonIcon fontSize="inherit"/>}
                         </Avatar>
-                        {/* Placeholder for avatar upload */}
-                        <IconButton size="small" sx={{ position: 'absolute', bottom: 5, right: 5, bgcolor: 'rgba(0, 0, 0, 0.6)', color: 'white', '&:hover': { bgcolor: 'rgba(0, 0, 0, 0.8)' } }} aria-label="upload picture" component="span" >
-                            <PhotoCameraIcon fontSize="small" />
-                        </IconButton>
                     </Box>
                     {/* Text Section */}
                     <Box sx={{ textAlign: { xs: 'center', sm: 'left' } }}>
@@ -283,14 +302,14 @@ function StudentProfile() {
 
                     <List disablePadding>
                         {/* --- Name Item --- */}
-                        <ListItem disablePadding secondaryAction={ <ChevronRightIcon sx={{ color: 'action.active' }} /> } >
-                            <ListItemButton onClick={handleOpenUsernameModal} sx={{ py: 1.5 }}>
+                        <ListItem disablePadding>
+                            <ListItem /*onClick={handleOpenUsernameModal}*/ sx={{ py: 1.5 }}>
                                 <ListItemIcon sx={{ minWidth: 40 }}> <AbcIcon /> </ListItemIcon>
                                 <ListItemText
                                     primary="Name"
                                     secondary={`Current: ${profileData.username}`}
                                 />
-                            </ListItemButton>
+                            </ListItem>
                         </ListItem>
                         <Divider component="li" />
                         {/* --- Password Item --- */}
@@ -309,9 +328,9 @@ function StudentProfile() {
 
             {/* --- MODALS --- */}
 
-            {/* Edit Username Modal */}
+            {/* Edit Username Modal
             <Dialog open={isUsernameModalOpen} onClose={handleCloseUsernameModal} maxWidth="xs" fullWidth>
-                {/* ... (DialogTitle, DialogContent with TextField, DialogActions with Buttons as before) ... */}
+                {/* ... (DialogTitle, DialogContent with TextField, DialogActions with Buttons as before) ... 
                  <DialogTitle>Edit Username</DialogTitle>
                 <DialogContent>
                     <TextField
@@ -342,7 +361,7 @@ function StudentProfile() {
                         {isUpdating ? 'Saving...' : 'Save Username'}
                     </Button>
                 </DialogActions>
-            </Dialog>
+            </Dialog>*/}
 
             {/* Edit Password Modal */}
             <Dialog open={isPasswordModalOpen} onClose={handleClosePasswordModal} maxWidth="xs" fullWidth>

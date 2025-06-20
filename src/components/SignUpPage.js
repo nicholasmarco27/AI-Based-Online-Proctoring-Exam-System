@@ -1,8 +1,8 @@
 // src/components/SignUpPage.js
 import React, { useState } from 'react';
 import { useNavigate, Link as RouterLink } from 'react-router-dom';
-import { Avatar, Button, TextField, Link, Grid, Box, Typography, Container, Paper, Alert } from '@mui/material';
-import PersonAddIcon from '@mui/icons-material/PersonAdd';
+import { Button, TextField, Link, Grid, Box, Typography, Container, Paper, Alert } from '@mui/material';
+import logoText from '../assets/intellixam-text.png'; // Import the logo
 import apiClient from '../api'; // Import the api client
 
 function SignUpPage() {
@@ -69,9 +69,15 @@ function SignUpPage() {
   return (
     <Container component="main" maxWidth="xs">
       <Paper elevation={3} sx={{ marginTop: 8, padding: 4, display: 'flex', flexDirection: 'column', alignItems: 'center', borderRadius: 2 }}>
-        <Avatar sx={{ m: 1, bgcolor: 'primary.main' }}> {/* Different color for sign up */}
-          <PersonAddIcon />
-        </Avatar>
+        <Box
+            component="img"
+            sx={{
+              my: 0,
+              height: 90, // Adjust height as needed
+            }}
+            alt="Intellixam Logo"
+            src={logoText}
+        />
         <Typography component="h1" variant="h5">
           Sign up as Student
         </Typography>

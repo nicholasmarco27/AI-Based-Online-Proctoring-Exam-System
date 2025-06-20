@@ -9,12 +9,11 @@ import {
 // Import necessary student menu icons
 import DashboardIcon from '@mui/icons-material/Dashboard';
 import AssignmentTurnedInIcon from '@mui/icons-material/AssignmentTurnedIn';
-import HistoryIcon from '@mui/icons-material/History'; // If using Results page
-import AccountCircleIcon from '@mui/icons-material/AccountCircle'; // <-- IMPORTED Profile icon
-// Import common icons
+import AccountCircleIcon from '@mui/icons-material/AccountCircle';
+import PersonIcon from '@mui/icons-material/Person';
 import MenuIcon from '@mui/icons-material/Menu';
 import LogoutIcon from '@mui/icons-material/Logout';
-import platformLogo from '../logo-myits-white.svg';
+import platformLogo from '../assets/intellixam.png';
 
 // Standard width for the sidebar drawer
 const drawerWidth = 240;
@@ -47,7 +46,6 @@ function StudentLayout({ onLogout }) {
     const menuItems = [
         { text: 'Dashboard', icon: <DashboardIcon />, path: '/student' },
         { text: 'Available Exams', icon: <AssignmentTurnedInIcon />, path: '/student/exams' },
-        // Uncomment 'My Results' if you implement the corresponding page/route
         // { text: 'My Results', icon: <HistoryIcon />, path: '/student/results' },
     ];
 
@@ -57,16 +55,14 @@ function StudentLayout({ onLogout }) {
             {/* Toolbar spacer in the drawer */}
             <Toolbar sx={{
                 justifyContent: 'center',   // Center the content (logo + text group)
-                bgcolor: theme.palette.primary.main,
-                color: theme.palette.primary.contrastText,
                 alignItems: 'center' // Ensure items align vertically in the center
             }}>
                 {/* Logo using Box component */}
                 <Box
                     component="img"
                     sx={{
-                        height: 30, // Adjust height as needed
-                        mr: 1.5,    // Add margin to the right (theme spacing units)
+                        height: 50, // Adjust height as needed
+                        mr: 0,    // Add margin to the right (theme spacing units)
                         // verticalAlign: 'middle' // Alternative alignment if needed
                     }}
                     alt="MyITS Platform Logo" // Important for accessibility
@@ -74,7 +70,7 @@ function StudentLayout({ onLogout }) {
                 />
 
                 {/* Your Title */}
-                <Typography variant="h6" noWrap component="div">
+                <Typography variant="h6" noWrap component="div" sx={{ color: 'black' }}>
                     Exam
                 </Typography>
             </Toolbar>
@@ -136,7 +132,7 @@ function StudentLayout({ onLogout }) {
                     backgroundColor: theme.palette.background.paper,
                     color: theme.palette.text.primary,
                 }}
-                elevation={1}
+                elevation={0}
             >
                <Toolbar>
                    {/* Hamburger icon for mobile drawer */}
@@ -147,8 +143,10 @@ function StudentLayout({ onLogout }) {
                    <Box sx={{ flexGrow: 0 }}>
                        <Tooltip title="User Options">
                            <IconButton onClick={handleOpenUserMenu} sx={{ p: 0 }}>
-                               {/* Placeholder Avatar */}
-                               <Avatar sx={{ bgcolor: theme.palette.primary.main }}>S</Avatar> {/* Replace 'S' with user initial if available */}
+                               {/* Placeholder Avatar */}                               
+                                <Avatar sx={{background: `linear-gradient(45deg, #7b4dff 30%, #3da9fc 90%)`, color: '#fff', fontSize: '1.5rem' }}>
+                                    <PersonIcon fontSize="inherit"/>
+                                </Avatar>
                            </IconButton>
                        </Tooltip>
                        <Menu

@@ -1,23 +1,22 @@
 [project]
-name = "backend"
+name = "intellixam-backend"
 version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
-requires-python = "==3.11.6"
+description = "Intellixam Backend Application"
+requires-python = ">=3.11.6"
 dependencies = [
-    "Flask",
-    "Flask-SQLAlchemy",
-    "Flask-Cors",
-    "PyJWT",
-    "python-dotenv>=0.19",
-    "opencv-python-headless",
-    "numpy",
-    "Pillow",
-    "Pandas",
-    "Flask-SocketIO",
-    "eventlet",  # Or use 'gevent' if preferred
+    "Flask==2.3.3",
+    "Flask-SQLAlchemy==3.1.1",
+    "Flask-Cors==4.0.0",
+    "PyJWT==2.8.0",
+    "python-dotenv==1.0.0",
+    "opencv-python-headless==4.8.1.78",
+    "numpy==1.24.3",
+    "Pillow==10.0.0",
+    "pandas==2.1.0",
+    "Flask-SocketIO==5.3.6",
+    "eventlet==0.33.3",
     "mediapipe==0.10.14",
-    "Werkzeug",
-    "PyMySQL",
-    "google-cloud-sql-connector[pymysql]"
+    "Werkzeug==2.3.7",
+    "PyMySQL==1.0.3",
+    "cloud-sql-python-connector[pymysql]==1.2.4",
 ]

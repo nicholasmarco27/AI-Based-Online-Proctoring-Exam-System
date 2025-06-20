@@ -9,6 +9,7 @@ import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import AnnouncementIcon from '@mui/icons-material/Announcement';
 import TimelineIcon from '@mui/icons-material/Timeline';
 import { useNavigate } from 'react-router-dom';
+import studentIllustration from '../../student-exam.png';
 import apiClient from '../../api'; // Pastikan path ini benar
 
 // Chart.js Imports
@@ -89,13 +90,27 @@ function StudentDashboard() {
     const [error, setError] = useState(null);
     const navigate = useNavigate();
 
+    // State for Welcome Card
+    const [currentDate, setCurrentDate] = useState('');
+    const studentName = "Student"; // Placeholder name
+
+    useEffect(() => {
+        // Set current date for the welcome card
+        const date = new Date();
+        setCurrentDate(date.toLocaleDateString('en-US', {
+            month: 'long',
+            day: 'numeric',
+            year: 'numeric'
+        }));
+    }, []); // Runs once on component mount to set the date
+
+
     // Fetch Data Effect
     useEffect(() => {
         const fetchDashboardData = async () => {
             setIsLoading(true);
             setError(null);
             try {
-                // Ganti '/student/dashboard' dengan endpoint API Anda yang sebenarnya jika berbeda
                 const response = await apiClient.get('/student/dashboard');
 
                 // Sortir hasil terbaru berdasarkan tanggal (terlama dulu untuk chart)
@@ -104,9 +119,9 @@ function StudentDashboard() {
                     const dateB = b.dateTaken ? new Date(b.dateTaken) : 0;
                     // Penanganan tanggal invalid sederhana
                     if (isNaN(dateA) && isNaN(dateB)) return 0;
-                    if (isNaN(dateA)) return 1; // Taruh invalid di akhir
-                    if (isNaN(dateB)) return -1; // Taruh invalid di akhir
-                    return dateA - dateB; // Urutkan dari terlama ke terbaru
+                    if (isNaN(dateA)) return 1; 
+                    if (isNaN(dateB)) return -1;
+                    return dateA - dateB; // Sort ascending (lama ke baru)
                 });
 
                 setDashboardData({
@@ -230,19 +245,72 @@ function StudentDashboard() {
             display: 'flex', // Aktifkan flexbox
             flexDirection: 'column' // Susun anak (Judul, Grid) secara vertikal
         }}>
-            {/* Judul Halaman */}
-            <Typography
-                variant="h4"
-                gutterBottom // Beri margin bawah
+            {/* Removed Original Typography Title "Student Dashboard" */}
+
+            {/* START: New Welcome Card */}
+            <Paper
+                elevation={2} 
                 sx={{
-                    mb: 3, // Margin bawah spesifik
-                    fontWeight: 500, // Ketebalan font
-                    color: '#000000', // Warna teks judul
-                    flexShrink: 0 // Jangan biarkan judul menyusut jika ruang terbatas
+                    p: { xs: 2, sm: 2.5, md: 3 }, // Responsive padding
+                    mb: 3,
+                    borderRadius: '12px', // Rounded corners like in the reference image
+                    backgroundColor: '#1a237e', // Custom purple color, similar to reference image
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    overflow: 'hidden', // To ensure child elements like image respect border radius
+                    flexShrink: 0, // Prevent this card from shrinking if parent flex container is constrained
                 }}
             >
-                Student Dashboard
-            </Typography>
+                <Box sx={{ flexGrow: 1, pr: {sm: 2, md: 3} }}> {/* Text content area, add padding to right before image */}
+                    <Typography
+                        variant="body2" // Smaller text for date
+                        display="block"
+                        sx={{ color: '#cfd4ff', mb: 0.75 }} // Dark gray, good contrast on the purple
+                    >
+                        {currentDate}
+                    </Typography>
+                    <Typography
+                        variant="h5" // Larger, prominent text for welcome message
+                        component="h1" // Semantic heading for accessibility
+                        sx={{
+                            fontWeight: 'bold',
+                            color: '#FFFFFF', // Black for maximum emphasis
+                            mb: 0.5,
+                            lineHeight: 1.3, // Adjust line height for dense text
+                        }}
+                    >
+                        Welcome back, {studentName}!
+                    </Typography>
+                    <Typography
+                        variant="body2" // Standard body text for the portal message
+                        sx={{ color: '#cfd4ff' }} // Dark gray, consistent with date
+                    >
+                        Always stay updated in your student portal
+                    </Typography>
+                </Box>
+                <Box
+                    sx={{
+                        display: { xs: 'none', sm: 'flex' }, // Hide image on extra-small screens
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: { sm: 130, md: 160, lg: 190 }, // Responsive width for the image container
+                        height: { sm: 90, md: 110, lg: 120 }, // Responsive height for the image container
+                        flexShrink: 0, // Prevent image box from shrinking
+                    }}
+                >
+                    <img
+                        src={studentIllustration}
+                        alt="Student portal illustration"
+                        style={{
+                            maxWidth: '100%', // Ensure image is responsive within its container
+                            maxHeight: '100%', // Ensure image is responsive within its container
+                            objectFit: 'contain', // Scales image to fit while maintaining aspect ratio
+                        }}
+                    />
+                </Box>
+            </Paper>
+            {/* END: New Welcome Card */}
 
             {/* Loading Indicator */}
             {isLoading && (

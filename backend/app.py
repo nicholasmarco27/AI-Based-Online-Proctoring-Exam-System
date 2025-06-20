@@ -11,9 +11,9 @@ import numpy as np
 # import mediapipe as mp
 import io
 import logging
-import json # <-- Import json
-import tempfile # <-- Import tempfile
-import atexit # <-- Import atexit for cleanup
+import json
+import tempfile
+import atexit
 
 # --- Cloud SQL Connector Imports ---
 import sqlalchemy
@@ -24,7 +24,7 @@ from models import (
     db, User, Exam, Question, RoleEnum, ExamStatusEnum, ExamSubmission,
     UserGroup, NotificationLog, NotificationType, SubmissionStatusEnum
 )
-from config import Config # <-- Ensure Config is imported
+from config import Config
 
 # Import utilities from SQLAlchemy
 from sqlalchemy.orm import joinedload, selectinload
@@ -51,7 +51,7 @@ except ImportError:
 
 # --- Helper Function for Cloud SQL Connection ---
 connector = None
-_db_conn = None # Cache the connection within the app context if needed, but connector handles pooling
+_db_conn = None
 
 def getconn() -> sqlalchemy.engine.base.Connection:
     """
@@ -73,7 +73,7 @@ def getconn() -> sqlalchemy.engine.base.Connection:
             user=Config.DB_USER,
             password=Config.DB_PASS,
             db=Config.DB_NAME,
-            ip_type=IPTypes.PUBLIC # Or IPTypes.PRIVATE
+            ip_type=IPTypes.PUBLIC
         )
         return conn
     except Exception as e:
@@ -89,8 +89,8 @@ def _cleanup_temp_sa_file():
     if _temp_sa_key_file and os.path.exists(_temp_sa_key_file.name):
         try:
             logging.info(f"Cleaning up temporary service account key file: {_temp_sa_key_file.name}")
-            _temp_sa_key_file.close() # Ensure it's closed
-            os.remove(_temp_sa_key_file.name) # Then remove
+            _temp_sa_key_file.close()
+            os.remove(_temp_sa_key_file.name)
             _temp_sa_key_file = None
         except Exception as e:
             logging.error(f"Error cleaning up temporary SA key file {_temp_sa_key_file.name}: {e}", exc_info=True)
@@ -107,16 +107,13 @@ def _setup_service_account_credentials(config):
         logging.info("Found GCP_SERVICE_ACCOUNT_KEY_JSON in config. Setting up temporary credentials file.")
         try:
             # Validate if it's actually JSON (optional but good)
-            # json.loads(sa_key_json_string) # This would raise error if invalid
+            # json.loads(sa_key_json_string) (This would raise error if invalid)
 
             # Create a temporary file securely
-            # Use delete=False because we need the file path to persist
-            # while the app is running. We'll clean it up with atexit.
             _temp_sa_key_file = tempfile.NamedTemporaryFile(mode='w+', encoding='utf-8', delete=False)
 
             _temp_sa_key_file.write(sa_key_json_string)
-            _temp_sa_key_file.flush() # Ensure content is written to disk
-            # temp_file.close() # Keep open? No, path is needed. Close handled by cleanup.
+            _temp_sa_key_file.flush() 
 
             sa_key_file_path = _temp_sa_key_file.name
             logging.info(f"Setting GOOGLE_APPLICATION_CREDENTIALS to temporary file: {sa_key_file_path}")
@@ -150,10 +147,8 @@ def create_app(config_class=Config):
                         format='%(asctime)s %(levelname)s %(name)s %(threadName)s : %(message)s')
     app.logger.info(f"Flask App starting with log level {log_level}")
 
-    # --- !!! Setup Service Account Credentials FIRST !!! ---
-    # This needs to run BEFORE the connector might be initialized implicitly or explicitly
+    # --- !!! Setup Service Account Credentials ---
     _setup_service_account_credentials(app.config)
-    # --- !!! End Service Account Setup !!! ---
 
 
     # --- Configure SQLAlchemy to use Cloud SQL Connector ---
@@ -182,7 +177,7 @@ def create_app(config_class=Config):
         app.logger.error(f"Error creating instance path {app.instance_path}: {e}", exc_info=True)
 
 
-    # Initialize SQLAlchemy AFTER setting engine options and SA creds
+    # Initialize SQLAlchemy
     db.init_app(app)
 
     # Initialize CORS
@@ -206,6 +201,9 @@ def create_app(config_class=Config):
     def token_required(f):
         @wraps(f)
         def decorated(*args, **kwargs):
+            if request.method == 'OPTIONS':
+                return f(*args, **kwargs)
+            
             token = None
             auth_header = request.headers.get('Authorization')
             if auth_header and auth_header.startswith('Bearer '):
@@ -215,12 +213,12 @@ def create_app(config_class=Config):
                 return jsonify({'message': 'Token is missing'}), 401
             try:
                 data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
-                current_user = db.session.get(User, data['user_id']) # Use session.get for primary key lookup
+                current_user = db.session.get(User, data['user_id'])
                 if not current_user:
                      app.logger.warning(f"User with ID {data['user_id']} (from token) not found in database.")
                      return jsonify({'message': 'User not found'}), 401
                 g.current_user = current_user
-                g.current_role = data['role'] # Store role from token
+                g.current_role = data['role']
                 app.logger.debug(f"Token validated for user {g.current_user.username} (Role: {g.current_role})")
             except jwt.ExpiredSignatureError:
                 app.logger.info("Token has expired.")
@@ -229,7 +227,7 @@ def create_app(config_class=Config):
                 app.logger.warning(f"Token is invalid: {e}")
                 return jsonify({'message': 'Token is invalid'}), 401
             except Exception as e:
-                 app.logger.exception(f"Unexpected error during token validation: {e}") # Log full exception
+                 app.logger.exception(f"Unexpected error during token validation: {e}")
                  return jsonify({'message': 'Token validation error'}), 401
             return f(*args, **kwargs)
         return decorated
@@ -254,12 +252,7 @@ def create_app(config_class=Config):
              return f(*args, **kwargs)
         return decorated
 
-    # --- API Routes ---
-    # ALL your existing API routes (@app.route(...)) remain unchanged below this point.
-    # They will now use the database connection established using the
-    # service account credentials (if provided) or default credentials.
 
-    # ... (Keep all your existing routes: /api/login, /api/register, admin routes, student routes, etc.) ...
     # Authentication Routes
     @app.route('/api/login', methods=['POST'])
     def login():
@@ -338,7 +331,6 @@ def create_app(config_class=Config):
     def get_admin_exams():
         """Gets a list of all exams (basic details)."""
         try:
-            # Eager load assigned groups count if needed often, else query separately or use relationship count
             exams = Exam.query.order_by(Exam.created_at.desc()).all()
             # Note: exam.to_dict now calculates question_count
             return jsonify([exam.to_dict(include_questions=False, include_groups=False) for exam in exams])
@@ -543,10 +535,7 @@ def create_app(config_class=Config):
         """Gets details for a specific exam, including questions and assigned groups."""
         app.logger.info(f"Admin request: Fetching details for exam ID: {exam_id}")
         try:
-            # Use session.get with joinedload options
-            # selectinload might be better for one-to-many (questions) if needed later
             exam = db.session.get(Exam, exam_id, options=[
-            # db.joinedload(Exam.questions), # This is dynamic, use selectinload or handle in to_dict
             joinedload(Exam.assigned_groups)
             ])
 
@@ -555,7 +544,6 @@ def create_app(config_class=Config):
                 return jsonify({"message": "Exam not found"}), 404
 
             app.logger.info(f"Admin request: Found exam '{exam.name}'. Serializing...")
-            # The robustness is now primarily within the to_dict method
             exam_dict = exam.to_dict(include_questions=True, include_groups=True)
             app.logger.info(f"Admin request: Serialization successful for exam {exam_id}.")
             return jsonify(exam_dict)
@@ -631,8 +619,6 @@ def create_app(config_class=Config):
 
             # Update Questions (Delete existing and Re-add new strategy)
             app.logger.info(f"Deleting existing questions for exam {exam_id} before update.")
-            # Use the relationship with cascade delete-orphan if configured
-            # Since exam.questions is dynamic, call delete() on the query object
             exam.questions.delete()
             db.session.flush() # Ensure deletes happen before adds
 
@@ -694,31 +680,46 @@ def create_app(config_class=Config):
             app.logger.exception(f"Error deleting exam {exam_id}: {e}")
             return jsonify({"message":"Internal server error deleting exam."}), 500
 
-    # Exam Results
     @app.route('/api/admin/exams/<int:exam_id>/results', methods=['GET'])
     @admin_required
     def get_exam_results(exam_id):
         """Gets results (submissions) for a specific exam."""
         app.logger.info(f"Admin request: Fetching results for exam ID: {exam_id}")
-        # Check if exam exists first (optional, but good practice)
+        
+        # Check if exam exists first
         exam_exists = db.session.query(Exam.id).filter_by(id=exam_id).first()
         if not exam_exists:
             app.logger.warning(f"Admin request: Exam not found when fetching results for ID {exam_id}.")
             return jsonify({"message": "Exam not found"}), 404
+        
         try:
-            # Eager load student and exam details for each submission using joinedload (defined in model)
-            submissions = ExamSubmission.query.filter_by(exam_id=exam_id)\
-                                               .order_by(ExamSubmission.submitted_at.desc())\
-                                               .all()
+            # Eager load student relationship (note: it's 'student', not 'user')
+            submissions = ExamSubmission.query.options(
+                joinedload(ExamSubmission.student)  # FIXED: Use 'student' not 'user'
+            ).filter_by(exam_id=exam_id)\
+            .order_by(ExamSubmission.submitted_at.desc())\
+            .all()
+            
             app.logger.info(f"Found {len(submissions)} submissions for exam {exam_id}. Serializing...")
-            # The robustness is now mainly within ExamSubmission.to_dict()
-            results = [sub.to_dict() for sub in submissions]
+            
+            results = []
+            for sub in submissions:
+                # Use the existing to_dict method from your model
+                sub_dict = sub.to_dict()
+                
+                # The to_dict method already includes 'username', but let's add student_username for compatibility
+                # FIXED: Use 'student' relationship instead of 'user'
+                sub_dict['student_username'] = sub.student.username if sub.student else None
+                
+                results.append(sub_dict)
+            
             app.logger.info(f"Serialization complete for exam {exam_id} results.")
             return jsonify(results), 200
+            
         except Exception as e:
-            # Log with exception info for detailed traceback
             app.logger.exception(f"Error fetching results for exam {exam_id}: {e}")
             return jsonify({"message": "An internal server error occurred while fetching results."}), 500
+
 
     # User Group Management
     @app.route('/api/admin/usergroups', methods=['POST'])
@@ -884,6 +885,102 @@ def create_app(config_class=Config):
             app.logger.exception(f"Admin: Error fetching student list: {e}")
             return jsonify({"message": "Internal server error fetching students."}), 500
 
+    @app.route('/api/admin/users', methods=['GET'])
+    @admin_required
+    def get_admin_users():
+        """Gets a paginated list of all users for admin management."""
+        try:
+            page = request.args.get('page', 1, type=int)
+            per_page = request.args.get('per_page', 15, type=int)
+            
+            # Limit per_page to prevent abuse
+            per_page = min(per_page, 100)
+            
+            users_query = User.query.order_by(User.id)
+            paginated_users = users_query.paginate(
+                page=page, 
+                per_page=per_page, 
+                error_out=False
+            )
+            
+            users_data = []
+            for user in paginated_users.items:
+                users_data.append({
+                    'id': user.id,
+                    'username': user.username,
+                    'role': user.role.value if hasattr(user.role, 'value') else user.role,
+                    'created_at': user.created_at.isoformat() if user.created_at else None
+                })
+            
+            return jsonify({
+                'users': users_data,
+                'total': paginated_users.total,
+                'current_page': page,
+                'per_page': per_page,
+                'pages': paginated_users.pages,
+                'has_next': paginated_users.has_next,
+                'has_prev': paginated_users.has_prev
+            }), 200
+            
+        except Exception as e:
+            app.logger.exception(f"Error fetching users list: {e}")
+            return jsonify({"message": "Error fetching users list."}), 500
+        
+    @app.route('/api/admin/users/import_csv', methods=['POST'])
+    @admin_required
+    def import_users_csv():
+        """Import users from CSV data sent in request body."""
+        try:
+            data = request.get_json()
+            if not data or 'usernames' not in data:
+                return jsonify({"message": "No usernames provided"}), 400
+            
+            usernames = data['usernames']
+            if not isinstance(usernames, list):
+                return jsonify({"message": "Usernames must be a list"}), 400
+            
+            added_count = 0
+            failed_imports = []
+            
+            for username in usernames:
+                username = username.strip()
+                if not username:
+                    continue
+                    
+                # Check if user already exists
+                existing_user = User.query.filter_by(username=username).first()
+                if existing_user:
+                    failed_imports.append({
+                        'username': username,
+                        'reason': 'User already exists'
+                    })
+                    continue
+                
+                try:
+                    # Create new user with username as password (as per your frontend logic)
+                    new_user = User(username=username, role=RoleEnum.STUDENT)
+                    new_user.set_password(username)  # Password same as username
+                    db.session.add(new_user)
+                    added_count += 1
+                except Exception as e:
+                    failed_imports.append({
+                        'username': username,
+                        'reason': f'Error creating user: {str(e)}'
+                    })
+            
+            if added_count > 0:
+                db.session.commit()
+            
+            return jsonify({
+                'message': f'Import completed. Added {added_count} users.',
+                'added_count': added_count,
+                'failed_imports': failed_imports
+            }), 200
+            
+        except Exception as e:
+            db.session.rollback()
+            app.logger.exception(f"Error importing users: {e}")
+            return jsonify({"message": "Error importing users"}), 500
 
     # --- Student Routes ---
     @app.route('/api/student/exams/available', methods=['GET'])
@@ -959,8 +1056,8 @@ def create_app(config_class=Config):
 
             if not exam: return jsonify({"message": "Exam not found."}), 404
             if exam.status != ExamStatusEnum.PUBLISHED:
-                app.logger.warning(f"Student {student.id} attempt to take non-published exam {exam_id} (Status: {exam.status.value}).")
-                return jsonify({"message": "This exam is not currently available."}), 403 # Forbidden
+                 app.logger.warning(f"Student {student.id} attempt to take non-published exam {exam_id} (Status: {exam.status.value}).")
+                 return jsonify({"message": "This exam is not currently available."}), 403 # Forbidden
 
             # Check Group Assignment
             if exam.assigned_groups: # Only check if exam IS assigned to groups
@@ -973,8 +1070,8 @@ def create_app(config_class=Config):
             # Check Attempts Left
             attempts_taken = ExamSubmission.query.filter_by(user_id=student.id, exam_id=exam_id).count()
             if attempts_taken >= exam.allowed_attempts:
-                app.logger.warning(f"Student {student.id} attempt to take exam {exam_id}: Max attempts ({exam.allowed_attempts}) already reached.")
-                return jsonify({"message": f"You have already used all {exam.allowed_attempts} attempt(s) for this exam."}), 403 # Forbidden
+                 app.logger.warning(f"Student {student.id} attempt to take exam {exam_id}: Max attempts ({exam.allowed_attempts}) already reached.")
+                 return jsonify({"message": f"You have already used all {exam.allowed_attempts} attempt(s) for this exam."}), 403 # Forbidden
 
             # Prepare exam data (remove correct answers)
             exam_data = exam.to_dict(include_questions=True, include_groups=False) # Get questions
@@ -984,18 +1081,18 @@ def create_app(config_class=Config):
 
             # Initialize Proctoring State (if enabled)
             try:
-                proctoring.initialize_proctoring_state(student.id)
-                app.logger.info(f"Student {student.id} starting exam {exam_id}. Proctoring initialized.")
+                 proctoring.initialize_proctoring_state(student.id)
+                 app.logger.info(f"Student {student.id} starting exam {exam_id}. Proctoring initialized.")
             except Exception as proc_e:
-                app.logger.error(f"Failed to initialize proctoring for student {student.id}, exam {exam_id}: {proc_e}", exc_info=True)
-                # Decide if this should prevent the exam from starting
-                # return jsonify({"message": "Could not initialize proctoring session. Please try again."}), 500
+                 app.logger.error(f"Failed to initialize proctoring for student {student.id}, exam {exam_id}: {proc_e}", exc_info=True)
+                 # Decide if this should prevent the exam from starting
+                 # return jsonify({"message": "Could not initialize proctoring session. Please try again."}), 500
 
             return jsonify(exam_data)
 
         except Exception as e:
-            app.logger.exception(f"Error fetching exam {exam_id} for student {student.id}: {e}")
-            return jsonify({"message": "Error retrieving exam details."}), 500
+             app.logger.exception(f"Error fetching exam {exam_id} for student {student.id}: {e}")
+             return jsonify({"message": "Error retrieving exam details."}), 500
 
 
     @app.route('/api/student/exams/<int:exam_id>/submit', methods=['POST'])
@@ -1227,7 +1324,7 @@ def create_app(config_class=Config):
         try:
             latest_submission = ExamSubmission.query.filter_by(user_id=student_id, exam_id=exam_id)\
                                                 .order_by(ExamSubmission.submitted_at.desc())\
-                                                .first() # Hanya yang paling baru
+                                                .first()
 
             attempts_taken_count = ExamSubmission.query.filter_by(user_id=student_id, exam_id=exam_id).count()
             app.logger.info(f"Total attempts counted for user {student_id}, exam {exam_id}: {attempts_taken_count}")
@@ -1306,7 +1403,7 @@ def create_app(config_class=Config):
                 db.session.commit()
                 app.logger.info(f"Logged EXAM_CANCELLED notification for user {student.id}, exam {exam.id} (max attempts reached).")
             except Exception as log_err:
-                db.session.rollback(); app.logger.error(f"Failed to create notification log for cancellation (max attempts reached) user {student.id}, exam {exam.id}: {log_err}", exc_info=True)
+                 db.session.rollback(); app.logger.error(f"Failed to create notification log for cancellation (max attempts reached) user {student.id}, exam {exam.id}: {log_err}", exc_info=True)
             try: proctoring.clear_proctoring_state(student.id)
             except Exception as proc_e: app.logger.error(f"Error clearing proctoring state after failed cancellation log (max attempts): {proc_e}")
             return jsonify({"message": f"Proctoring violation noted, but maximum attempts ({exam.allowed_attempts}) were already recorded for this exam."}), 403
@@ -1317,10 +1414,10 @@ def create_app(config_class=Config):
             total_questions = 0
             if exam.questions:
                 try:
-                    total_questions = exam.questions.count() # Use count() on dynamic relationship
+                    total_questions = exam.questions.count() 
                 except Exception as q_count_err:
                     app.logger.warning(f"Could not count questions for cancellation record: {q_count_err}")
-                    # Fallback maybe? Or accept 0 if count fails?
+
                     total_questions = 0
 
             cancelled_submission = ExamSubmission(
@@ -1346,7 +1443,7 @@ def create_app(config_class=Config):
                 db.session.commit()
                 app.logger.info(f"Created EXAM_CANCELLED notification log for user {student.id}, exam {exam.id} (linked to sub ID {cancelled_submission.id})")
             except Exception as log_err:
-                db.session.rollback(); app.logger.error(f"Failed to create notification log for cancellation user {student.id}, exam {exam.id} after creating submission: {log_err}", exc_info=True)
+                 db.session.rollback(); app.logger.error(f"Failed to create notification log for cancellation user {student.id}, exam {exam.id} after creating submission: {log_err}", exc_info=True)
 
             try: proctoring.clear_proctoring_state(student.id); app.logger.info(f"Cleared proctoring state for user {student.id} after cancellation.")
             except Exception as proc_e: app.logger.error(f"Error clearing proctoring state after cancellation for user {student.id}: {proc_e}", exc_info=True)
@@ -1365,8 +1462,8 @@ def create_app(config_class=Config):
         try:
             limit = request.args.get('limit', 15, type=int) # Ambil 15 terbaru
             notifications = NotificationLog.query.options(
-                                joinedload(NotificationLog.user), # Eager load user
-                                joinedload(NotificationLog.exam)  # Eager load exam
+                                joinedload(NotificationLog.user),
+                                joinedload(NotificationLog.exam) 
                             )\
                             .order_by(NotificationLog.timestamp.desc())\
                             .limit(limit)\
@@ -1495,6 +1592,7 @@ def create_app(config_class=Config):
             app.logger.exception(f"Database error updating profile for user {student.id}: {e}")
             return jsonify({"message": "An internal error occurred while saving profile changes."}), 500
 
+    
 
     # --- Proctoring Analysis Route ---
     @app.route('/api/proctor/analyze_frame', methods=['POST'])
@@ -1548,20 +1646,10 @@ app = create_app()
 # Simple route for testing if the app is up
 @app.route('/')
 def home():
-    # Test DB connection optionally on home route (can be slow)
-    # try:
-    #     db.session.execute(sqlalchemy.text('SELECT 1'))
-    #     db.session.commit() # or rollback()
-    #     return 'Hello, Flask is running and DB connection seems OK!'
-    # except Exception as e:
-    #     logging.error(f"DB connection check failed: {e}")
-    #     return 'Hello, Flask is running BUT DB connection failed!', 500
     return 'Hello, Flask is running!'
 
 
 if __name__ == '__main__':
-    # Use environment variable for port or default to 5001
-    port = int(os.environ.get('PORT', 5001))
-    # Debug should be False in production, controlled by an environment variable
+    port = int(os.environ.get('PORT', 8080))
     debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() in ('true', '1', 't')
-    app.run(debug=debug_mode, host='0.0.0.0', port=port) # Listen on all interfaces if needed for containerization/external access
+    app.run(debug=debug_mode, host='0.0.0.0', port=port)

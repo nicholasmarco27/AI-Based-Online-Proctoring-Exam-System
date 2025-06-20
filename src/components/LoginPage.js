@@ -2,9 +2,9 @@ import React, { useState } from 'react';
 // Import RouterLink for navigation links within the app
 import { Link as RouterLink } from 'react-router-dom';
 // Import MUI components
-import { Avatar, Button, TextField, Link, Grid, Box, Typography, Container, Paper, Alert } from '@mui/material';
-// Import MUI Icon
-import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
+import { Button, TextField, Link, Grid, Box, Typography, Container, Paper, Alert } from '@mui/material';
+// Import Logo
+import logoText from '../assets/intellixam-text.png';
 // Import API client helper and Auth context hook
 import apiClient from '../api';
 import { useAuth } from '../App';
@@ -63,10 +63,16 @@ function LoginPage() {
     <Container component="main" maxWidth="xs">
       {/* Paper component for visual grouping and elevation */}
       <Paper elevation={3} sx={{ marginTop: 8, padding: 4, display: 'flex', flexDirection: 'column', alignItems: 'center', borderRadius: 2 }}>
-        {/* Avatar with lock icon */}
-        <Avatar sx={{ m: 1, bgcolor: 'secondary.main' }}>
-          <LockOutlinedIcon />
-        </Avatar>
+        {/* Logo Image */}
+        <Box
+          component="img"
+          sx={{
+            my: 0,
+            height: 90, // Adjust height as needed
+          }}
+          alt="Intellixam Logo"
+          src={logoText}
+        />
         {/* Title */}
         <Typography component="h1" variant="h5">
           Sign in
@@ -126,18 +132,14 @@ function LoginPage() {
               {/* Placeholder for Forgot Password link */}
               {/* <Link href="#" variant="body2"> Forgot password? </Link> */}
             </Grid>
-            <Grid item>
-              {/* Link to Sign Up page using React Router */}
-              <Link component={RouterLink} to="/signup" variant="body2">
-                {"Don't have an account? Sign Up (Student)"}
-              </Link>
+            <Grid container justifyContent="flex-end">
+              <Grid item>
+                <Link component={RouterLink} to="/signup" variant="body2">
+                  {"Don't have an account? Sign Up (Student)"}
+                </Link>
+              </Grid>
             </Grid>
           </Grid>
-
-          {/* Helper text for default credentials */}
-           <Typography variant="body2" color="text.secondary" align="center" sx={{ mt: 3 }}>
-             Use 'admin'/'admin123' or login as a student.
-           </Typography>
         </Box>
       </Paper>
 
@@ -145,7 +147,7 @@ function LoginPage() {
        <Typography variant="body2" color="text.secondary" align="center" sx={{ mt: 5 }}>
          {'© '}
          <Link color="inherit" href="#"> {/* Replace with your app name/link */}
-           Kelompok 2 Capstone Project
+           Intellixam
          </Link>{' '}
          {new Date().getFullYear()}
          {'.'}

@@ -12,9 +12,10 @@ import SignUpPage from './components/SignUpPage';
 
 import AdminDashboard from './pages/admin/AdminDashboard';
 import AdminExamList from './pages/admin/AdminExamList';
-import ExamForm from './pages/admin/ExamForm'; 
+import ExamForm from './pages/admin/ExamForm';
 import ExamResultAdm from './pages/admin/ExamResultAdm';
-import UserManagement from './pages/admin/UserManagement';
+import UserManagement from './pages/admin/UserManagement'; // This is for User Groups / Classes
+import UserListPage from './pages/admin/UserListPage';   // <-- IMPORT THE NEW USER LIST PAGE
 
 import StudentDashboard from './pages/student/StudentDashboard';
 import StudentAvailableExams from './pages/student/StudentAvailableExams';
@@ -179,10 +180,10 @@ function App() {
               <Route path="exams/new" element={<ExamForm />} /> {/* Create new exam */}
               <Route path="exams/:examId/edit" element={<ExamForm />} /> {/* Edit existing exam */}
               <Route path="exams/:examId/results" element={<ExamResultAdm />} /> {/* View results for a specific exam */}
-              <Route path="exams/:examId/results/:submissionId" element={<ExamResultAdm />} /> {/* View results for a specific submission */}       
-              <Route path="usergroups" element={<UserManagement />} />
-              {/* Add other admin-specific routes here (e.g., users, results) */}
-              {/* <Route path="users" element={<AdminUserManagement />} /> */}
+              <Route path="exams/:examId/results/:submissionId" element={<ExamResultAdm />} /> {/* View results for a specific submission */}
+              <Route path="usergroups" element={<UserManagement />} /> {/* This is for managing Classes/Groups */}
+              <Route path="users" element={<UserListPage />} /> {/* <-- ADDED ROUTE FOR USER LIST PAGE */}
+              {/* Add other admin-specific routes here */}
               {/* Catch-all for any undefined paths under /admin */}
               <Route path="*" element={<Navigate to="/admin" replace />} />
           </Route>
@@ -197,8 +198,7 @@ function App() {
               <Route path="take-exam/:examId" element={<ExamTakingInterface />} />
               <Route path="exam/:examId/submitted" element={<ExamSubmittedPage />} />
               <Route path="profile" element={<StudentProfile />} />
-              {/* Add other student-specific routes here (e.g., results, profile, taking an exam) */}
-              {/* <Route path="results" element={<StudentResults />} /> */}
+              {/* Add other student-specific routes here */}
               {/* Catch-all for any undefined paths under /student */}
               <Route path="*" element={<Navigate to="/student" replace />} />
           </Route>

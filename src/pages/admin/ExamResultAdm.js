@@ -132,14 +132,14 @@ function ExamResultAdm() {
         });
         dataForExcel.push({});
         dataForExcel.push({ 'Pertanyaan': 'TOTAL SKOR', 'Jawaban Siswa': submission.score !== null ? `${submission.score.toFixed(2)}%` : 'N/A' });
-        dataForExcel.push({ 'Pertanyaan': 'Jawaban Benar', 'Jawaban Siswa': `${submission.correct_answers_count ?? 'N/A'} / ${submission.total_questions_count ?? 'N/A'}` });
+        dataForExcel.push({ 'Pertanyaan': 'Jawaban Benar', 'Jawaban Siswa': `${submission.correctAnswer ?? 'N/A'} / ${submission.totalQuestions ?? 'N/A'}` });
 
         try {
             const ws = XLSX.utils.json_to_sheet(dataForExcel);
             ws['!cols'] = [ { wch: 60 }, { wch: 30 }, { wch: 30 }, { wch: 15 } ];
             const wb = XLSX.utils.book_new();
             XLSX.utils.book_append_sheet(wb, ws, "Detail Jawaban");
-            const studentUsernameSafe = (submission.student_username || `user_${submission.user_id}`).replace(/[^a-zA-Z0-9_]/g, '_');
+            const studentUsernameSafe = (submission.username || `user_${submission.user_id}`).replace(/[^a-zA-Z0-9_]/g, '_');
             const fileName = `Hasil_${examDetails.name?.replace(/[^a-zA-Z0-9_]/g, '_')}_${studentUsernameSafe}.xlsx`;
             XLSX.writeFile(wb, fileName);
         } catch (excelError) {
@@ -163,10 +163,10 @@ function ExamResultAdm() {
                 validScoresCount++;
             }
             return {
-                'Username Siswa': result.student_username || `User ID: ${result.user_id}`,
+                'Username Siswa': result.username || `User ID: ${result.user_id}`,
                 'Skor (%)': result.score !== null ? result.score.toFixed(2) : 'N/A',
-                'Tanggal Submit': formatDateTime(result.submitted_at),
-                'Jawaban Benar': `${result.correct_answers_count ?? 'N/A'} / ${result.total_questions_count ?? 'N/A'}`,
+                'Tanggal Submit': formatDateTime(result.submittedAt),
+                'Jawaban Benar': `${result.correctAnswers ?? 'N/A'} / ${result.totalQuestions ?? 'N/A'}`,
             };
         });
         const averageScore = validScoresCount > 0 ? (totalScore / validScoresCount) : 0;
@@ -261,16 +261,16 @@ function ExamResultAdm() {
                                     results.map((result) => (
                                         <TableRow hover key={result.id}>
                                             <TableCell component="th" scope="row">
-                                                {result.student_username || `User ID: ${result.user_id}`}
+                                                {result.username || `User ID: ${result.userId}`}
                                             </TableCell>
                                             <TableCell align="right">
                                                 {result.score !== null ? result.score.toFixed(2) : 'N/A'}
                                             </TableCell>
                                             <TableCell>
-                                                {formatDateTime(result.submitted_at)}
+                                                {formatDateTime(result.submittedAt)}
                                             </TableCell>
                                             <TableCell align="center">
-                                                {`${result.correct_answers_count ?? 'N/A'} / ${result.total_questions_count ?? 'N/A'}`}
+                                                {`${result.correctAnswers ?? 'N/A'} / ${result.totalQuestions ?? 'N/A'}`}
                                             </TableCell>
                                             <TableCell align="center">
                                                 <Tooltip title="Download Detail Jawaban (.xlsx)">

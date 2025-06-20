@@ -1,4 +1,13 @@
 # Intellixam AI Exam Proctoring
+
+## Anggota
+| Nama                            | NRP          |
+| ------------------------------- | ------------ |
+| Gabriella Erlinda Wijaya        | `5027221018` |
+| Nicholas Marco Weinandra        | `5027221042` |
+| Stephanie Hebrina M. S.         | `5027221069` |
+
+
 ## Preview
 **Intellixam** is a new way of proctoring online exam by incorporating the use of Face Detection to monitor student behavior and enhance exam integrity. By leveraging advanced technologies such as MediaPipe for real-time face and head pose detection, and OpenCV for image processing, Intellixam can automatically identify suspicious activities—such as looking away from the screen, the presence of multiple faces, or absence from the camera—during an exam session.
 
